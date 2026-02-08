@@ -1,0 +1,20 @@
+{
+  "bundle_artifacts": [
+    "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/bundles_2025_02_27/bundle_2025-02-27_loc1_machine2.json"
+  ],
+  "currency": "UAH",
+  "db_path": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/coffee.db",
+  "location_id": 1,
+  "machine_id": 2,
+  "run_day": "2025-02-27",
+  "script_modules": [
+    "simple_agent_framework.scripts.restock_predictor",
+    "simple_agent_framework.scripts.systematic_demand_change_watch",
+    "simple_agent_framework.scripts.slow_mover_cleanup",
+    "simple_agent_framework.scripts.pricing_sanity_check",
+    "simple_agent_framework.scripts.pricing_anomaly",
+    "simple_agent_framework.scripts.payment_outage_hint",
+    "simple_agent_framework.scripts.machine_dropoff_monitor",
+    "simple_agent_framework.scripts.service_due_predictor"
+  ]
+}

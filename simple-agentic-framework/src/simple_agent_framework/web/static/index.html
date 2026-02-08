@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daily Alert Engine</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__name">Daily Alert Engine</div>
+          <div class="brand__hint">Manager inbox for location-specific next actions</div>
+        </div>
+
+        <div class="controls">
+          <div class="controls__row">
+            <div class="pill" id="state-pill">Loading state…</div>
+            <button class="btn btn--ghost" id="reset-btn" type="button">Reset</button>
+            <button class="btn btn--ghost" id="run-btn" type="button">Run Current</button>
+            <button class="btn btn--primary" id="next-btn" type="button">Next Day</button>
+          </div>
+          <div class="controls__row">
+            <label class="field">
+              <span class="field__label">Skip to day</span>
+              <input class="field__input" id="skip-date" type="date" />
+            </label>
+            <button class="btn btn--ghost" id="skip-btn" type="button">Skip</button>
+            <button class="btn btn--ghost" id="refresh-btn" type="button">Refresh</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="panel inbox">
+          <div class="panel__head">
+            <div class="panel__title">Alerts Inbox</div>
+            <div class="panel__sub" id="alerts-meta">Loading…</div>
+          </div>
+          <div class="panel__body">
+            <div id="alerts-list" class="list"></div>
+          </div>
+        </section>
+
+        <section class="panel detail">
+          <div class="panel__head">
+            <div class="panel__title">Alert Detail</div>
+            <div class="panel__sub" id="detail-meta">Select an alert</div>
+          </div>
+          <div class="panel__body">
+            <div id="detail" class="detail__empty">No alert selected.</div>
+          </div>
+        </section>
+
+        <section class="panel dashboard">
+          <div class="panel__head">
+            <div class="panel__title">Dashboard (14 days)</div>
+            <div class="panel__sub" id="dash-meta"></div>
+          </div>
+          <div class="panel__body">
+            <div id="dashboard" class="dash"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
+

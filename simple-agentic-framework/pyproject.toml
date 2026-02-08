@@ -1,0 +1,28 @@
+[project]
+name = "simple-agent-framework"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.116.1",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "marimo>=0.19.9",
+    "openai>=2.17.0",
+    "polars>=1.38.1",
+    "pydantic-ai>=1.56.0",
+    "pydantic-monty>=0.0.4",
+    "python-dotenv>=1.2.1",
+    "sqlmodel>=0.0.32",
+    "statsmodels>=0.14.6",
+    "uvicorn>=0.35.0",
+]
+
+[project.scripts]
+simple-agent = "simple_agent_framework.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/simple_agent_framework"]

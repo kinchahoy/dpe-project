@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "noEmitOnError": true,
+    "outDir": "../src/simple_agent_framework/web/static",
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts"]
+}

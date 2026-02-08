@@ -1,0 +1,1 @@
+"""Deterministic alert scripts."""

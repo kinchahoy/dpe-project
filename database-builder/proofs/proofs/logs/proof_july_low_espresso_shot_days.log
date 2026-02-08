@@ -1,0 +1,6 @@
+2026-02-07 16:55:52.637 | INFO     | __main__:run_proof:30 - PROOF START: Days in July with <= 2 espresso shots consumed
+2026-02-07 16:55:52.637 | INFO     | __main__:run_proof:31 - Step 1: Rebuild derived daily aggregate tables
+2026-02-07 16:55:52.679 | INFO     | init_daily_aggregates:rebuild_daily_aggregates:126 - Rebuilt daily aggregates: 0 sales rows, 0 ingredient rows.
+2026-02-07 16:55:52.679 | INFO     | __main__:run_proof:34 - Step 2: Resolve ingredient id for espresso_shot
+2026-02-07 16:55:52.680 | ERROR    | __main__:run_proof:40 - FAIL: ingredient 'espresso_shot' was not found
+2026-02-07 16:55:52.680 | INFO     | __main__:run_proof:41 - Proof log file: proofs/logs/proof_july_low_espresso_shot_days.log

@@ -1,0 +1,32 @@
+2026-02-08 00:08:18 | INFO | PROOF START
+2026-02-08 00:08:18 | INFO | Step 1/8: Open DB and load alert 9794514b-8e48-4be8-bd0b-9adc7e920dd7
+2026-02-08 00:08:18 | INFO | Loaded alert: run_date=2025-02-23, script=restock_predictor v1.0, status=OPEN, loc=2, machine=4, ingredient=2
+2026-02-08 00:08:18 | INFO | Step 2/8: Validate alert identity and default day
+2026-02-08 00:08:18 | INFO | Identity checks passed
+2026-02-08 00:08:18 | INFO | Step 3/8: Rebuild feature bundle for same day/location/machine
+2026-02-08 00:08:18 | INFO | Resolved currency from engine query: USD
+2026-02-08 00:08:18 | INFO | Bundle contains 697 ingredient forecast rows (window: >2025-02-23 to <=+10d)
+2026-02-08 00:08:18 | INFO | Step 4/8: Recompute the script's 3-day ingredient aggregation
+2026-02-08 00:08:18 | INFO | Top ingredient by 3-day qty: 2 -> 11534.536225
+2026-02-08 00:08:18 | INFO | Top 5 ingredients by 3-day qty:
+2026-02-08 00:08:18 | INFO |   ingredient=2 qty_3d=11534.536225
+2026-02-08 00:08:18 | INFO |   ingredient=4 qty_3d=1361.100135
+2026-02-08 00:08:18 | INFO |   ingredient=5 qty_3d=350.977197
+2026-02-08 00:08:18 | INFO |   ingredient=1 qty_3d=141.454141
+2026-02-08 00:08:18 | INFO |   ingredient=7 qty_3d=131.846513
+2026-02-08 00:08:18 | INFO | 3-day per-day totals for top ingredient 2:
+2026-02-08 00:08:18 | INFO |   day=2025-02-24 ingredient=2 qty=3620.944728
+2026-02-08 00:08:18 | INFO |   day=2025-02-25 ingredient=2 qty=3889.523156
+2026-02-08 00:08:18 | INFO |   day=2025-02-26 ingredient=2 qty=4024.068341
+2026-02-08 00:08:18 | INFO | Step 5/8: Apply restock_predictor formulas
+2026-02-08 00:08:18 | INFO | Expected evidence: top_ingredient_id=2, projected_3d_qty=11534.54
+2026-02-08 00:08:18 | INFO | Expected restock level (x1.25): {'2': 14418.17}
+2026-02-08 00:08:18 | INFO | Expected order quantity (x1.35): 15571.62
+2026-02-08 00:08:18 | INFO | Step 6/8: Execute script analyze(ctx) with rebuilt payload
+2026-02-08 00:08:18 | INFO | Script emitted one alert: Restock soon for projected ingredient draw
+2026-02-08 00:08:18 | INFO | Step 7/8: Compare computed payload to stored alert fields
+2026-02-08 00:08:18 | INFO | Script output matches formula-based expectations
+2026-02-08 00:08:18 | INFO | Step 8/8: Compare stored DB payload to expected payload
+2026-02-08 00:08:18 | INFO | Stored DB evidence/actions exactly match recomputed values
+2026-02-08 00:08:18 | INFO | PROOF RESULT: PASS
+2026-02-08 00:08:18 | INFO | Log file written to: /Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/prove_restock_alert_2025_02_23.log

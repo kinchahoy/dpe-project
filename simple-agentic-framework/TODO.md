@@ -1,0 +1,6 @@
+- [x] 1. Create `uv` environment (`uv add`, `uv sync`)
+- [x] 2. Fix feature-baseline edge cases (z-score when std=0, fallback baseline)
+- [x] 3. Make demo injection also populate `transaction_expanded`
+- [x] 4. Build TypeScript inbox UI (static `index.html` + compiled JS/CSS)
+- [x] 5. Wire API + static UI (smoke through `/api/*`)
+- [x] 6. Run `uv format`, `uvx ty check`, and a smoke run

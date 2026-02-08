@@ -1,0 +1,40 @@
+{
+  "bundle_artifacts": [
+    {
+      "currency": "UAH",
+      "location_id": 1,
+      "machine_id": 1,
+      "payload_json": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/bundles_2025_02_27/bundle_2025-02-27_loc1_machine1.json"
+    },
+    {
+      "currency": "UAH",
+      "location_id": 1,
+      "machine_id": 2,
+      "payload_json": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/bundles_2025_02_27/bundle_2025-02-27_loc1_machine2.json"
+    },
+    {
+      "currency": "USD",
+      "location_id": 2,
+      "machine_id": 3,
+      "payload_json": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/bundles_2025_02_27/bundle_2025-02-27_loc2_machine3.json"
+    },
+    {
+      "currency": "USD",
+      "location_id": 2,
+      "machine_id": 4,
+      "payload_json": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/proofs/logs/bundles_2025_02_27/bundle_2025-02-27_loc2_machine4.json"
+    }
+  ],
+  "db_path": "/Users/raistlin/code/vr-repos/dpe-project/simple-agentic-framework/coffee.db",
+  "run_day": "2025-02-27",
+  "script_modules": [
+    "simple_agent_framework.scripts.restock_predictor",
+    "simple_agent_framework.scripts.systematic_demand_change_watch",
+    "simple_agent_framework.scripts.slow_mover_cleanup",
+    "simple_agent_framework.scripts.pricing_sanity_check",
+    "simple_agent_framework.scripts.pricing_anomaly",
+    "simple_agent_framework.scripts.payment_outage_hint",
+    "simple_agent_framework.scripts.machine_dropoff_monitor",
+    "simple_agent_framework.scripts.service_due_predictor"
+  ]
+}

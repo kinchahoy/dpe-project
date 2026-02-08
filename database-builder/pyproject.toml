@@ -1,0 +1,10 @@
+[project]
+name = "simple-agent-backend"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7.3",
+    "polars>=1.38.1",
+    "sqlmodel>=0.0.32",
+    "statsmodels>=0.14.6",
+]

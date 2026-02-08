@@ -1,0 +1,19 @@
+{
+    "workbench.editorAssociations": {
+        "file:/**/*.csv": "jupyter-data-wrangler"
+    },
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "/Users/raistlin/Downloads/ComprehensiveFoodDatabase/CompFoodCSV/CompFood.sqlite",
+            "name": "CompFood"
+        },
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "coffee.db",
+            "name": "test"
+        }
+    ]
+}
