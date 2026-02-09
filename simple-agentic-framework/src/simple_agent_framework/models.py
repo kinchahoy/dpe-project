@@ -77,6 +77,28 @@ class Alert(SQLModel, table=True):
     )
 
 
+class MachineInventory(SQLModel, table=True):
+    __tablename__ = "machine_inventory"
+
+    id: int = Field(default=None, primary_key=True)
+    snapshot_date: date = Field(index=True)
+    location_id: int = Field(index=True)
+    location_name: str = Field(default="")
+    machine_id: int = Field(index=True)
+    machine_name: str = Field(default="")
+    ingredient_id: int
+    ingredient_name: str = Field(default="")
+    quantity_on_hand: float
+    unit: str
+
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_date", "machine_id", "ingredient_id",
+            name="uq_inventory_snapshot",
+        ),
+    )
+
+
 class EngineState(SQLModel, table=True):
     __tablename__ = "engine_state"
 

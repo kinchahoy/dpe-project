@@ -2,78 +2,144 @@ from __future__ import annotations
 
 from datetime import date as Date
 from datetime import datetime, time
+from pathlib import Path
 from typing import Optional
 
-from sqlmodel import Field, Relationship, SQLModel, create_engine
-from sqlalchemy import text
+from sqlalchemy import MetaData, text
+from sqlmodel import Field, SQLModel, create_engine
+
+ARTIFACTS_DIR = Path("artifacts")
+
+FACTS_DB_FILE = ARTIFACTS_DIR / "vending_machine_facts.db"
+OBSERVED_DB_FILE = ARTIFACTS_DIR / "vending_sales_observed.db"
+SIM_DB_FILE = ARTIFACTS_DIR / "vending_analysis.db"
+
+facts_metadata = MetaData()
+observed_metadata = MetaData()
+sim_metadata = MetaData()
 
 
-class Location(SQLModel, table=True):
+class FactsBase(SQLModel):
+    metadata = facts_metadata
+
+
+class ObservedBase(SQLModel):
+    metadata = observed_metadata
+
+
+class SimBase(SQLModel):
+    metadata = sim_metadata
+
+
+# ----------------------------
+# Facts DB (stable dimensions)
+# ----------------------------
+
+
+class Location(FactsBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    external_id: str
+    external_id: str = Field(index=True, unique=True)
     timezone: str
     region: str
     address: str
 
 
-class Machine(SQLModel, table=True):
+class Machine(FactsBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    serial_number: str
-    model: str
+    serial_number: str = Field(index=True, unique=True)
+    model: str = Field(index=True)
     installed_at: datetime
     last_serviced_at: datetime
     current_hours: int
-    location_id: int = Field(foreign_key="location.id")
-
-    location: Location = Relationship()
+    location_id: int = Field(foreign_key="location.id", index=True)
 
 
-class Product(SQLModel, table=True):
+class Product(FactsBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
 
 
-class Ingredient(SQLModel, table=True):
+class Ingredient(FactsBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
     unit: str
 
 
-class ProductIngredient(SQLModel, table=True):
+class ProductIngredient(FactsBase, table=True):
+    __tablename__ = "product_ingredient"
+
     id: Optional[int] = Field(default=None, primary_key=True)
     product_id: int = Field(foreign_key="product.id", index=True)
     ingredient_id: int = Field(foreign_key="ingredient.id", index=True)
     quantity: float
 
-    product: Product = Relationship()
-    ingredient: Ingredient = Relationship()
 
+class MachineIngredientCapacity(FactsBase, table=True):
+    __tablename__ = "machine_ingredient_capacity"
 
-class Transaction(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    product_id: int = Field(foreign_key="product.id", index=True)
-    location_id: int = Field(foreign_key="location.id", index=True)
-    machine_id: int = Field(foreign_key="machine.id", index=True)
-    date: Date
+    machine_model: str = Field(index=True)
+    ingredient_id: int = Field(foreign_key="ingredient.id", index=True)
+    capacity: float
+    unit: str
+    notes: str = ""
+
+
+# ------------------------------------
+# Observed DB (ingested events + daily)
+# ------------------------------------
+
+
+class Transaction(ObservedBase, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    product_id: int = Field(index=True)
+    location_id: int = Field(index=True)
+    machine_id: int = Field(index=True)
+    date: Date = Field(index=True)
     occurred_at: datetime = Field(index=True)
     cash_type: str = Field(index=True)
     card_token: Optional[str] = Field(default=None, index=True)
     amount: float
-    currency: str
+    currency: str = Field(index=True)
     source_file: Optional[str] = None
     source_row: int
 
-    product: Product = Relationship()
-    location: Location = Relationship()
-    machine: Machine = Relationship()
 
+class DailyIngredientConsumption(ObservedBase, table=True):
+    __tablename__ = "daily_ingredient_consumption"
 
-class PriceChange(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    product_id: int = Field(foreign_key="product.id", index=True)
-    location_id: int = Field(foreign_key="location.id", index=True)
+    date: Date = Field(index=True)
+    machine_id: int = Field(index=True)
+    ingredient_id: int = Field(index=True)
+    total_quantity: float
+    unit: str
+
+
+# ------------------------------------------
+# Simulation DB (ephemeral, per-run artifacts)
+# ------------------------------------------
+
+
+class SimRun(SimBase, table=True):
+    __tablename__ = "sim_run"
+
+    id: str = Field(primary_key=True)
+    created_at: datetime = Field(index=True)
+    seed_start_date: Date = Field(index=True)
+    seed_end_date: Date = Field(index=True)
+    notes: str = ""
+
+
+class SimPriceChange(SimBase, table=True):
+    __tablename__ = "sim_price_change"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
+    product_id: int = Field(index=True)
+    location_id: int = Field(index=True)
     currency: str = Field(index=True)
     change_date: Date = Field(index=True)
     old_price: Optional[float] = None
@@ -82,61 +148,90 @@ class PriceChange(SQLModel, table=True):
     tod_end_time: Optional[time] = None
     tod_delta: float = 0.0
 
-    product: Product = Relationship()
 
-
-class TransactionExpanded(SQLModel, table=True):
-    __tablename__ = "transaction_expanded"
+class SimTransactionExpanded(SimBase, table=True):
+    __tablename__ = "sim_transaction_expanded"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    transaction_id: int = Field(foreign_key="transaction.id", index=True, unique=True)
-    product_id: int = Field(foreign_key="product.id", index=True)
-    location_id: int = Field(foreign_key="location.id", index=True)
-    machine_id: int = Field(foreign_key="machine.id", index=True)
-    date: Date
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
+    transaction_id: int = Field(index=True)
+    product_id: int = Field(index=True)
+    location_id: int = Field(index=True)
+    machine_id: int = Field(index=True)
+    date: Date = Field(index=True)
     occurred_at: datetime = Field(index=True)
     cash_type: str = Field(index=True)
     card_token: Optional[str] = Field(default=None, index=True)
     amount: float
     expected_price: Optional[float] = Field(default=None, index=True)
     product_group: str = Field(index=True)
-    currency: str
+    currency: str = Field(index=True)
     source_file: Optional[str] = None
     source_row: int
 
-    transaction: Transaction = Relationship()
-    product: Product = Relationship()
-    location: Location = Relationship()
-    machine: Machine = Relationship()
 
-
-class InventorySnapshot(SQLModel, table=True):
-    __tablename__ = "inventory_snapshots"
+class SimInventoryDayStart(SimBase, table=True):
+    __tablename__ = "sim_inventory_day_start"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    snapshot_date: Date = Field(index=True)
-    machine_id: int = Field(foreign_key="machine.id", index=True)
-    ingredient_id: int = Field(foreign_key="ingredient.id", index=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
+    date: Date = Field(index=True)
+    machine_id: int = Field(index=True)
+    ingredient_id: int = Field(index=True)
     quantity_on_hand: float
     unit: str
 
-    machine: Machine = Relationship()
-    ingredient: Ingredient = Relationship()
 
-
-class DailyProjection(SQLModel, table=True):
-    __tablename__ = "daily_projections"
+class SimRefillEvent(SimBase, table=True):
+    __tablename__ = "sim_refill_event"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
+    occurred_at: datetime = Field(index=True)
+    date: Date = Field(index=True)
+    machine_id: int = Field(index=True)
+    ingredient_id: int = Field(index=True)
+    quantity_added: float
+    unit: str
+    reason: str = ""
+
+
+class SimAlert(SimBase, table=True):
+    __tablename__ = "sim_alert"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
+    created_at: datetime = Field(index=True)
+    script_name: str = Field(index=True)
+    alert_type: str = Field(index=True)
+    severity: str = Field(index=True)
+    status: str = Field(index=True, default="OPEN")  # OPEN | CLOSED | SUPPRESSED
+    location_id: int = Field(index=True)
+    machine_id: Optional[int] = Field(default=None, index=True)
+    evidence_json: str = "{}"
+    summary: str = ""
+
+    reviewed_at: Optional[datetime] = Field(default=None, index=True)
+    assessment: Optional[str] = None
+    suggested_action_type: Optional[str] = Field(default=None, index=True)
+    suggested_action_reason: Optional[str] = None
+    suggested_action_params_json: str = "{}"
+    optional_script_change_name: Optional[str] = None
+    optional_script_change_description: Optional[str] = None
+
+
+class SimDailyProjection(SimBase, table=True):
+    __tablename__ = "sim_daily_projection"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
     projection_date: Date = Field(index=True)
     forecast_date: Date = Field(index=True)
     training_start: Date
     training_end: Date
-    location_id: int = Field(foreign_key="location.id", index=True)
-    machine_id: int = Field(foreign_key="machine.id", index=True)
-    product_id: Optional[int] = Field(
-        default=None, foreign_key="product.id", index=True
-    )
+    location_id: int = Field(index=True)
+    machine_id: int = Field(index=True)
+    product_id: Optional[int] = Field(default=None, index=True)
     product_rank: Optional[int] = Field(default=None, index=True)
     is_long_tail: bool = Field(default=False, index=True)
     long_tail_proportion: float = 0.0
@@ -144,134 +239,47 @@ class DailyProjection(SQLModel, table=True):
     model_name: str = Field(index=True)
     used_price_data: bool = Field(default=False)
 
-    location: Location = Relationship()
-    machine: Machine = Relationship()
-    product: Product = Relationship()
 
-
-class DailyIngredientProjection(SQLModel, table=True):
-    __tablename__ = "daily_ingredient_projections"
+class SimDailyIngredientProjection(SimBase, table=True):
+    __tablename__ = "sim_daily_ingredient_projection"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(foreign_key="sim_run.id", index=True)
     projection_date: Date = Field(index=True)
     forecast_date: Date = Field(index=True)
     training_start: Date
     training_end: Date
-    location_id: int = Field(foreign_key="location.id", index=True)
-    machine_id: int = Field(foreign_key="machine.id", index=True)
-    ingredient_id: int = Field(foreign_key="ingredient.id", index=True)
+    location_id: int = Field(index=True)
+    machine_id: int = Field(index=True)
+    ingredient_id: int = Field(index=True)
     forecast_quantity: float
     unit: str
     model_name: str = Field(index=True)
 
-    location: Location = Relationship()
-    machine: Machine = Relationship()
-    ingredient: Ingredient = Relationship()
+
+facts_engine = create_engine(url=f"sqlite:///{FACTS_DB_FILE}")
+observed_engine = create_engine(url=f"sqlite:///{OBSERVED_DB_FILE}")
+sim_engine = create_engine(url=f"sqlite:///{SIM_DB_FILE}")
 
 
-engine = create_engine(url="sqlite:///coffee.db")
-
-
-def _drop_sqlite_object(conn, name: str) -> None:
-    obj_type = conn.execute(
-        text("SELECT type FROM sqlite_master WHERE name = :name"),
+def _drop_view(conn, name: str) -> None:
+    if conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='view' AND name = :name"),
         {"name": name},
-    ).scalar()
-    if obj_type == "table":
-        conn.execute(text(f'DROP TABLE "{name}"'))
-    elif obj_type == "view":
+    ).scalar():
         conn.execute(text(f'DROP VIEW "{name}"'))
 
 
-def _sqlite_table_columns(conn, table_name: str) -> set[str]:
-    rows = conn.execute(text(f'PRAGMA table_info("{table_name}")')).fetchall()
-    return {row[1] for row in rows}
+def create_facts_db() -> None:
+    FACTS_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    facts_metadata.create_all(facts_engine)
 
 
-def _ensure_transaction_expanded_schema(conn) -> None:
-    """
-    Ensure `transaction_expanded` exists with the expected columns.
-
-    This table is derived and safe to drop/rebuild.
-    """
-    if conn.execute(
-        text(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='enhancedtransaction'"
-        )
-    ).scalar():
-        conn.execute(text('DROP TABLE "enhancedtransaction"'))
-
-    required = {
-        "id",
-        "transaction_id",
-        "product_id",
-        "location_id",
-        "machine_id",
-        "date",
-        "occurred_at",
-        "cash_type",
-        "card_token",
-        "amount",
-        "expected_price",
-        "product_group",
-        "currency",
-        "source_file",
-        "source_row",
-    }
-    cols = _sqlite_table_columns(conn, "transaction_expanded")
-    if cols and not required.issubset(cols):
-        conn.execute(text('DROP TABLE "transaction_expanded"'))
-
-
-def ensure_schema_views() -> None:
-    """
-    Create human-friendly, auto-discoverable views.
-
-    Notes
-    - Views are used for derived aggregates so we don't persist redundant tables.
-    - We keep compatibility views for the old camel/concatenated table names.
-    """
-    with engine.begin() as conn:
-        # Drop old derived aggregate tables if present (safe to regenerate).
-        for name in (
-            "dailyproductsales",
-            "dailyingredientconsumption",
-            "daily_product_sales",
-            "daily_ingredient_consumption",
-            "transactions",
-            "products",
-            "ingredients",
-            "machines",
-            "locations",
-            "product_ingredients",
-            "price_changes",
-            "enhanced_transactions",
-            "transaction_withprice",
-            "daily_product_projections",
-        ):
-            _drop_sqlite_object(conn, name)
-
-        # Clean naming aliases for core tables.
-        conn.execute(text('CREATE VIEW "transactions" AS SELECT * FROM "transaction"'))
-        conn.execute(text('CREATE VIEW "products" AS SELECT * FROM "product"'))
-        conn.execute(text('CREATE VIEW "ingredients" AS SELECT * FROM "ingredient"'))
-        conn.execute(text('CREATE VIEW "machines" AS SELECT * FROM "machine"'))
-        conn.execute(text('CREATE VIEW "locations" AS SELECT * FROM "location"'))
-        conn.execute(
-            text(
-                'CREATE VIEW "product_ingredients" AS SELECT * FROM "productingredient"'
-            )
-        )
-        conn.execute(text('CREATE VIEW "price_changes" AS SELECT * FROM "pricechange"'))
-
-        # Clean naming alias for product projections table.
-        conn.execute(
-            text(
-                'CREATE VIEW "daily_product_projections" AS SELECT * FROM "daily_projections"'
-            )
-        )
-
-        # Derived aggregates as views.
+def create_observed_db() -> None:
+    OBSERVED_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    observed_metadata.create_all(observed_engine)
+    with observed_engine.begin() as conn:
+        _drop_view(conn, "daily_product_sales")
         conn.execute(
             text(
                 """
@@ -283,7 +291,8 @@ def ensure_schema_views() -> None:
                     t.product_id AS product_id,
                     t.currency AS currency,
                     t.cash_type AS cash_type,
-                    COUNT(*) AS units_sold
+                    COUNT(*) AS units_sold,
+                    SUM(t.amount) AS revenue
                 FROM "transaction" AS t
                 GROUP BY
                     t.date,
@@ -295,70 +304,8 @@ def ensure_schema_views() -> None:
                 """
             )
         )
-        conn.execute(
-            text(
-                """
-                CREATE VIEW "daily_ingredient_consumption" AS
-                SELECT
-                    t.date AS date,
-                    t.machine_id AS machine_id,
-                    pi.ingredient_id AS ingredient_id,
-                    SUM(pi.quantity) AS total_quantity,
-                    ing.unit AS unit
-                FROM "transaction" AS t
-                JOIN "productingredient" AS pi
-                    ON pi.product_id = t.product_id
-                JOIN "ingredient" AS ing
-                    ON ing.id = pi.ingredient_id
-                GROUP BY
-                    t.date,
-                    t.machine_id,
-                    pi.ingredient_id
-                """
-            )
-        )
-
-        # Compatibility view names matching old derived table names.
-        # dailyproductsales historically omitted machine_id; we keep that behavior here.
-        conn.execute(
-            text(
-                """
-                CREATE VIEW "dailyproductsales" AS
-                SELECT
-                    date,
-                    location_id,
-                    product_id,
-                    currency,
-                    cash_type,
-                    SUM(units_sold) AS units_sold
-                FROM "daily_product_sales"
-                GROUP BY
-                    date,
-                    location_id,
-                    product_id,
-                    currency,
-                    cash_type
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
-                CREATE VIEW "dailyingredientconsumption" AS
-                SELECT
-                    date,
-                    machine_id,
-                    ingredient_id,
-                    total_quantity,
-                    unit
-                FROM "daily_ingredient_consumption"
-                """
-            )
-        )
 
 
-def create_db() -> None:
-    with engine.begin() as conn:
-        _ensure_transaction_expanded_schema(conn)
-    SQLModel.metadata.create_all(engine)
-    ensure_schema_views()
+def create_sim_db() -> None:
+    SIM_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    sim_metadata.create_all(sim_engine)

@@ -1,123 +1,180 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, time
 
 from loguru import logger
-from sqlalchemy import delete, text
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from db import Ingredient, InventorySnapshot, Machine, Transaction, create_db, engine
+from db import (
+    DailyIngredientConsumption,
+    Machine,
+    MachineIngredientCapacity,
+    SimInventoryDayStart,
+    SimRefillEvent,
+    SimRun,
+    create_facts_db,
+    create_observed_db,
+    create_sim_db,
+    facts_engine,
+    observed_engine,
+    sim_engine,
+)
 
-DAYS_OF_CAPACITY = 5
+REFILL_THRESHOLD_FRACTION = 0.25
 
 
-def rebuild_inventory_snapshots() -> None:
+def _seed_window(*, run_id: str):
+    with Session(sim_engine) as session:
+        run = session.get(SimRun, run_id)
+        if run is None:
+            raise ValueError(f"Unknown run_id: {run_id}")
+        return (run.seed_start_date, run.seed_end_date)
+
+
+def rebuild_inventory_snapshots(*, run_id: str) -> None:
     """
-    Seed start-of-day on-hand inventory snapshots.
+    Seed `sim_inventory_day_start` and `sim_refill_event` for a sim run.
 
-    Assumptions (simple + intended for demo/alert prototyping):
-    - Each machine is "fully restocked" at the start of every day.
-    - "Capacity" for each (machine, ingredient) is ~N days of typical use, where typical
-      use is inferred from historical daily ingredient consumption.
+    Design
+    - Capacity is a hard fact from `artifacts/vending_machine_facts.db` (`machine_ingredient_capacity`).
+    - Daily drawdown is taken from `artifacts/vending_sales_observed.db` (`daily_ingredient_consumption`).
+    - Refill events are synthesized with a simple policy:
+      if end-of-day on-hand < REFILL_THRESHOLD_FRACTION * capacity, refill to capacity.
     """
-    create_db()
-    with Session(engine) as session:
-        machine_ids = list(session.exec(select(Machine.id)).all())
-        ingredient_rows = list(
-            session.exec(select(Ingredient.id, Ingredient.unit)).all()
-        )
-        ingredient_unit_by_id = {
-            ingredient_id: unit for ingredient_id, unit in ingredient_rows
-        }
+    create_facts_db()
+    create_observed_db()
+    create_sim_db()
 
-        txn_dates = list(session.exec(select(Transaction.date)).all())
-        snapshot_dates = sorted(set(txn_dates))
-        if not snapshot_dates:
-            logger.warning(
-                "No transactions found. Skipping inventory snapshot rebuild."
-            )
-            return
+    seed_start, seed_end = _seed_window(run_id=run_id)
 
-        consumption_rows = session.exec(
-            text(
-                """
-                SELECT
-                    t.date AS date,
-                    t.machine_id AS machine_id,
-                    pi.ingredient_id AS ingredient_id,
-                    SUM(pi.quantity) AS total_quantity
-                FROM "transaction" AS t
-                JOIN "productingredient" AS pi
-                    ON pi.product_id = t.product_id
-                GROUP BY
-                    t.date,
-                    t.machine_id,
-                    pi.ingredient_id
-                """
+    with Session(facts_engine) as facts_session:
+        machines = facts_session.exec(select(Machine.id, Machine.model)).all()
+        capacities = facts_session.exec(select(MachineIngredientCapacity)).all()
+
+    capacity_by_model_ing: dict[tuple[str, int], MachineIngredientCapacity] = {
+        (row.machine_model, row.ingredient_id): row for row in capacities
+    }
+
+    machine_model_by_id = {int(machine_id): model for machine_id, model in machines}
+    if not machine_model_by_id:
+        logger.warning("No machines found in facts DB; skipping inventory seed.")
+        return
+
+    with Session(observed_engine) as obs_session:
+        cons_rows = obs_session.exec(
+            select(DailyIngredientConsumption).where(
+                (DailyIngredientConsumption.date >= seed_start)
+                & (DailyIngredientConsumption.date <= seed_end)
             )
         ).all()
 
-        total_qty_by_machine_ing: dict[tuple[int, int], float] = defaultdict(float)
-        day_count_by_machine_ing: dict[tuple[int, int], int] = defaultdict(int)
-        total_qty_by_ing: dict[int, float] = defaultdict(float)
-        day_count_by_ing: dict[int, int] = defaultdict(int)
+    consumption_by_date_machine_ing: dict[tuple, float] = defaultdict(float)
+    unit_by_ing: dict[int, str] = {}
+    dates: set = set()
+    for row in cons_rows:
+        dates.add(row.date)
+        consumption_by_date_machine_ing[
+            (row.date, row.machine_id, row.ingredient_id)
+        ] += float(row.total_quantity)
+        unit_by_ing[int(row.ingredient_id)] = row.unit
 
-        for _date_value, machine_id, ingredient_id, total_quantity in consumption_rows:
-            key = (int(machine_id), int(ingredient_id))
-            qty = float(total_quantity or 0.0)
-            total_qty_by_machine_ing[key] += qty
-            day_count_by_machine_ing[key] += 1
-            total_qty_by_ing[int(ingredient_id)] += qty
-            day_count_by_ing[int(ingredient_id)] += 1
+    if not dates:
+        logger.warning(
+            "No daily ingredient consumption rows found in observed DB for run_id={run_id}; skipping inventory seed.",
+            run_id=run_id,
+        )
+        return
 
-        capacity_by_machine_ing: dict[tuple[int, int], float] = {}
-        for machine_id in machine_ids:
-            for ingredient_id in ingredient_unit_by_id.keys():
-                key = (int(machine_id), int(ingredient_id))
-                days = day_count_by_machine_ing.get(key, 0)
-                if days > 0:
-                    avg_daily = total_qty_by_machine_ing[key] / days
-                else:
-                    ing_days = day_count_by_ing.get(int(ingredient_id), 0)
-                    avg_daily = (
-                        (total_qty_by_ing[int(ingredient_id)] / ing_days)
-                        if ing_days > 0
-                        else 0.0
+    all_dates = sorted(dates)
+
+    inventory_rows: list[SimInventoryDayStart] = []
+    refill_rows: list[SimRefillEvent] = []
+
+    for machine_id, machine_model in machine_model_by_id.items():
+        relevant_caps = [
+            cap
+            for (model, _ingredient_id), cap in capacity_by_model_ing.items()
+            if model == machine_model
+        ]
+        if not relevant_caps:
+            continue
+
+        on_hand_by_ing: dict[int, float] = {}
+        for cap in relevant_caps:
+            on_hand_by_ing[int(cap.ingredient_id)] = float(cap.capacity)
+
+        for d in all_dates:
+            for cap in relevant_caps:
+                ing_id = int(cap.ingredient_id)
+                unit = cap.unit or unit_by_ing.get(ing_id, "")
+                inventory_rows.append(
+                    SimInventoryDayStart(
+                        run_id=run_id,
+                        date=d,
+                        machine_id=machine_id,
+                        ingredient_id=ing_id,
+                        quantity_on_hand=float(
+                            on_hand_by_ing.get(ing_id, cap.capacity)
+                        ),
+                        unit=unit,
                     )
-                capacity_by_machine_ing[key] = max(
-                    0.0, float(avg_daily) * DAYS_OF_CAPACITY
                 )
 
-        session.exec(delete(InventorySnapshot))
-        session.commit()
+            for cap in relevant_caps:
+                ing_id = int(cap.ingredient_id)
+                used = float(
+                    consumption_by_date_machine_ing.get((d, machine_id, ing_id), 0.0)
+                )
+                on_hand_by_ing[ing_id] = (
+                    float(on_hand_by_ing.get(ing_id, cap.capacity)) - used
+                )
 
-        rows: list[InventorySnapshot] = []
-        for snapshot_date in snapshot_dates:
-            for machine_id in machine_ids:
-                for ingredient_id, unit in ingredient_unit_by_id.items():
-                    capacity = capacity_by_machine_ing[
-                        (int(machine_id), int(ingredient_id))
-                    ]
-                    rows.append(
-                        InventorySnapshot(
-                            snapshot_date=snapshot_date,
-                            machine_id=int(machine_id),
-                            ingredient_id=int(ingredient_id),
-                            quantity_on_hand=capacity,
-                            unit=unit,
-                        )
+            for cap in relevant_caps:
+                ing_id = int(cap.ingredient_id)
+                capacity = float(cap.capacity)
+                threshold = REFILL_THRESHOLD_FRACTION * capacity
+                current = float(on_hand_by_ing.get(ing_id, capacity))
+                if current >= threshold:
+                    continue
+                amount_added = max(0.0, capacity - max(0.0, current))
+                if amount_added <= 0.0:
+                    on_hand_by_ing[ing_id] = capacity
+                    continue
+                refill_rows.append(
+                    SimRefillEvent(
+                        run_id=run_id,
+                        occurred_at=datetime.combine(d, time(23, 59, 0)),
+                        date=d,
+                        machine_id=machine_id,
+                        ingredient_id=ing_id,
+                        quantity_added=amount_added,
+                        unit=cap.unit,
+                        reason=f"auto_refill_below_{REFILL_THRESHOLD_FRACTION:.2f}x_capacity",
                     )
+                )
+                on_hand_by_ing[ing_id] = capacity
 
-        session.add_all(rows)
-        session.commit()
-        logger.info(
-            "Rebuilt inventory snapshots: {dates} dates, {machines} machines, {ingredients} ingredients => {rows} rows.",
-            dates=len(snapshot_dates),
-            machines=len(machine_ids),
-            ingredients=len(ingredient_unit_by_id),
-            rows=len(rows),
+    with Session(sim_engine) as sim_session:
+        sim_session.exec(
+            delete(SimInventoryDayStart).where(SimInventoryDayStart.run_id == run_id)
         )
+        sim_session.exec(delete(SimRefillEvent).where(SimRefillEvent.run_id == run_id))
+        sim_session.commit()
+        sim_session.add_all(inventory_rows)
+        sim_session.add_all(refill_rows)
+        sim_session.commit()
+
+    logger.info(
+        "Seeded sim inventory: {inv} start-of-day rows, {refills} refill events for run_id={run_id}.",
+        inv=len(inventory_rows),
+        refills=len(refill_rows),
+        run_id=run_id,
+    )
 
 
 if __name__ == "__main__":
-    rebuild_inventory_snapshots()
+    raise SystemExit(
+        "Run via init_db.py (needs a sim run id). Example: python init_db.py"
+    )

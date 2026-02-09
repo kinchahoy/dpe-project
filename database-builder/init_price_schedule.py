@@ -8,9 +8,21 @@ from typing import Iterable, Optional
 import polars as pl
 from loguru import logger
 from sqlalchemy import delete
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
-from db import PriceChange, Product, Transaction, TransactionExpanded, create_db, engine
+from db import (
+    Product,
+    SimPriceChange,
+    SimRun,
+    SimTransactionExpanded,
+    Transaction,
+    create_facts_db,
+    create_observed_db,
+    create_sim_db,
+    facts_engine,
+    observed_engine,
+    sim_engine,
+)
 from product_catalog import canonical_product
 
 MIN_SEASON_DAYS = 5
@@ -84,15 +96,12 @@ def _season_changes(seasons: Iterable[Season]) -> list[dict]:
     return changes
 
 
-def _load_transactions() -> pl.DataFrame:
-    with Session(engine) as session:
+def _load_transactions(*, seed_start: date, seed_end: date) -> pl.DataFrame:
+    with Session(observed_engine) as session:
         rows = session.exec(
-            select(
-                Transaction.product_id,
-                Transaction.location_id,
-                Transaction.date,
-                Transaction.amount,
-                Transaction.currency,
+            select(Transaction).where(
+                (col(Transaction.date) >= seed_start)
+                & (col(Transaction.date) <= seed_end)
             )
         ).all()
 
@@ -109,22 +118,37 @@ def _load_transactions() -> pl.DataFrame:
 
     data = [
         {
-            "product_id": row[0],
-            "location_id": row[1],
-            "date": row[2],
-            "amount": row[3],
-            "currency": row[4],
+            "product_id": row.product_id,
+            "location_id": row.location_id,
+            "date": row.date,
+            "amount": row.amount,
+            "currency": row.currency,
         }
         for row in rows
     ]
     return pl.DataFrame(data).sort(["product_id", "location_id", "currency", "date"])
 
 
-def init_price_schedule() -> None:
-    create_db()
-    df = _load_transactions()
+def _seed_window(*, run_id: str) -> tuple[date, date]:
+    with Session(sim_engine) as session:
+        run = session.get(SimRun, run_id)
+        if run is None:
+            raise ValueError(f"Unknown run_id: {run_id}")
+        return (run.seed_start_date, run.seed_end_date)
+
+
+def init_price_schedule(*, run_id: str) -> None:
+    create_facts_db()
+    create_observed_db()
+    create_sim_db()
+
+    seed_start, seed_end = _seed_window(run_id=run_id)
+    df = _load_transactions(seed_start=seed_start, seed_end=seed_end)
     if df.is_empty():
-        logger.warning("No transactions found. Skipping price schedule init.")
+        logger.warning(
+            "No seed-window transactions found for run_id={run_id}. Skipping price schedule init.",
+            run_id=run_id,
+        )
         return
     null_locations = df.get_column("location_id").null_count()
     if null_locations:
@@ -134,8 +158,8 @@ def init_price_schedule() -> None:
         )
         df = df.filter(pl.col("location_id").is_not_null())
 
-    with Session(engine) as session:
-        session.exec(delete(PriceChange))
+    with Session(sim_engine) as session:
+        session.exec(delete(SimPriceChange).where(SimPriceChange.run_id == run_id))
         session.commit()
 
         groups = df.group_by(["product_id", "location_id", "currency"])
@@ -160,7 +184,8 @@ def init_price_schedule() -> None:
 
             for change in _season_changes(seasons):
                 session.add(
-                    PriceChange(
+                    SimPriceChange(
+                        run_id=run_id,
                         product_id=product_id,
                         location_id=location_id,
                         currency=currency,
@@ -175,24 +200,26 @@ def init_price_schedule() -> None:
 
 
 def _load_price_changes(
-    session: Session,
-) -> dict[tuple[int, int, str], list[PriceChange]]:
+    session: Session, *, run_id: str
+) -> dict[tuple[int, int, str], list[SimPriceChange]]:
     changes = session.exec(
-        select(PriceChange).order_by(
-            PriceChange.product_id,
-            PriceChange.location_id,
-            PriceChange.currency,
-            PriceChange.change_date,
+        select(SimPriceChange)
+        .where(SimPriceChange.run_id == run_id)
+        .order_by(
+            SimPriceChange.product_id,
+            SimPriceChange.location_id,
+            SimPriceChange.currency,
+            SimPriceChange.change_date,
         )
     ).all()
-    schedule: dict[tuple[int, int, str], list[PriceChange]] = {}
+    schedule: dict[tuple[int, int, str], list[SimPriceChange]] = {}
     for change in changes:
         key = (change.product_id, change.location_id, change.currency)
         schedule.setdefault(key, []).append(change)
     return schedule
 
 
-def _match_time_window(change: PriceChange, txn_time) -> bool:
+def _match_time_window(change: SimPriceChange, txn_time) -> bool:
     if change.tod_start_time is None or change.tod_end_time is None:
         return True
     start = change.tod_start_time
@@ -204,7 +231,7 @@ def _match_time_window(change: PriceChange, txn_time) -> bool:
 
 
 def _expected_price_for(
-    txn: Transaction, changes: list[PriceChange]
+    txn: Transaction, changes: list[SimPriceChange]
 ) -> Optional[float]:
     dates = [change.change_date for change in changes]
     idx = bisect_right(dates, txn.date) - 1
@@ -217,29 +244,39 @@ def _expected_price_for(
     return price
 
 
-def update_expected_prices() -> None:
-    create_db()
-    with Session(engine) as session:
-        schedule = _load_price_changes(session)
+def update_expected_prices(*, run_id: str) -> None:
+    create_facts_db()
+    create_observed_db()
+    create_sim_db()
+
+    seed_start, seed_end = _seed_window(run_id=run_id)
+
+    with Session(facts_engine) as facts_session:
+        product_names = facts_session.exec(select(Product.id, Product.name)).all()
+    product_name_by_id = {row[0]: row[1] for row in product_names}
+
+    with Session(observed_engine) as obs_session:
+        txns = obs_session.exec(
+            select(Transaction).where(
+                (Transaction.date >= seed_start) & (Transaction.date <= seed_end)
+            )
+        ).all()
+
+    with Session(sim_engine) as session:
+        schedule = _load_price_changes(session, run_id=run_id)
         if not schedule:
             logger.warning("No price schedule rows found. Skipping expected prices.")
             return
 
-        session.exec(delete(TransactionExpanded))
+        session.exec(
+            delete(SimTransactionExpanded).where(
+                SimTransactionExpanded.run_id == run_id
+            )
+        )
         session.commit()
 
-        product_names = session.exec(select(Product.id, Product.name)).all()
-        product_name_by_id = {row[0]: row[1] for row in product_names}
-
-        txns = session.exec(select(Transaction)).all()
         inserted = 0
         for txn in txns:
-            if txn.location_id is None:
-                logger.warning(
-                    "Skipping transaction {txn_id} with null location_id.",
-                    txn_id=txn.id,
-                )
-                continue
             key = (txn.product_id, txn.location_id, txn.currency)
             changes = schedule.get(key)
             if not changes:
@@ -248,7 +285,8 @@ def update_expected_prices() -> None:
             if expected is None:
                 continue
             session.add(
-                TransactionExpanded(
+                SimTransactionExpanded(
+                    run_id=run_id,
                     transaction_id=txn.id,
                     product_id=txn.product_id,
                     location_id=txn.location_id,
@@ -273,4 +311,6 @@ def update_expected_prices() -> None:
 
 
 if __name__ == "__main__":
-    init_price_schedule()
+    raise SystemExit(
+        "Run via init_db.py (needs a sim run id). Example: python init_db.py"
+    )

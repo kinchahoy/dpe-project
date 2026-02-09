@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from .db import ensure_agent_schema, fetch_all, fetch_one, make_engine
 from .llm_review import review_alert_with_ai
-from .models import Alert, EngineState, ScriptVersion
+from .models import Alert, EngineState, MachineInventory, ScriptVersion
 from .script_context import build_script_context
 from .script_registry import discover_scripts
 from .script_runner import ScriptExecutionError, run_script
@@ -191,6 +191,8 @@ class DailyAlertEngine:
                         payload=alert_payload,
                     ):
                         alerts_created += 1
+
+        self.sync_inventory(run_day)
 
         logger.info(
             "Daily run complete day={} scripts={} alerts={}",
@@ -440,6 +442,154 @@ class DailyAlertEngine:
             "end_day": end_day.isoformat(),
             "daily_revenue": revenue_rows,
             "top_alert_patterns": alert_rows,
+        }
+
+    def sync_inventory(self, as_of: date) -> int:
+        """Copy inventory_snapshots from coffee.db into agent.db for the given date.
+
+        Uses the closest available snapshot_date <= as_of.  Returns the number
+        of rows written.
+        """
+        # Find the closest snapshot date that is <= as_of
+        closest = fetch_one(
+            self.data_db,
+            """
+            SELECT MAX(snapshot_date) AS snap_date
+            FROM inventory_snapshots
+            WHERE snapshot_date <= ?
+            """,
+            (as_of.isoformat(),),
+        )
+        snap_date = closest["snap_date"] if closest else None
+        if snap_date is None:
+            # Fall back to the earliest available snapshot
+            earliest = fetch_one(
+                self.data_db,
+                "SELECT MIN(snapshot_date) AS snap_date FROM inventory_snapshots",
+            )
+            snap_date = earliest["snap_date"] if earliest else None
+        if snap_date is None:
+            return 0
+
+        rows = fetch_all(
+            self.data_db,
+            """
+            SELECT s.snapshot_date, s.machine_id, s.ingredient_id,
+                   s.quantity_on_hand, s.unit,
+                   m.name AS machine_name, m.location_id,
+                   l.name AS location_name,
+                   i.name AS ingredient_name
+            FROM inventory_snapshots s
+            JOIN machine m ON m.id = s.machine_id
+            JOIN location l ON l.id = m.location_id
+            JOIN ingredient i ON i.id = s.ingredient_id
+            WHERE s.snapshot_date = ?
+            ORDER BY m.location_id, m.id, i.name
+            """,
+            (snap_date,),
+        )
+
+        with Session(self.sql_engine) as session:
+            # Clear previous snapshot for this date
+            session.exec(  # type: ignore[call-overload]
+                select(MachineInventory).where(
+                    MachineInventory.snapshot_date == as_of
+                )
+            )
+            existing = session.exec(
+                select(MachineInventory).where(
+                    MachineInventory.snapshot_date == as_of
+                )
+            ).all()
+            for item in existing:
+                session.delete(item)
+
+            for row in rows:
+                inv = MachineInventory(
+                    snapshot_date=as_of,
+                    location_id=int(row["location_id"]),
+                    location_name=str(row["location_name"]),
+                    machine_id=int(row["machine_id"]),
+                    machine_name=str(row["machine_name"]),
+                    ingredient_id=int(row["ingredient_id"]),
+                    ingredient_name=str(row["ingredient_name"]),
+                    quantity_on_hand=float(row["quantity_on_hand"]),
+                    unit=str(row["unit"]),
+                )
+                session.add(inv)
+            session.commit()
+
+        logger.info("Synced {} inventory rows for {}", len(rows), as_of.isoformat())
+        return len(rows)
+
+    def get_inventory(self) -> dict[str, Any]:
+        """Return the latest inventory snapshot from agent.db, grouped by location."""
+        with Session(self.sql_engine) as session:
+            state = session.exec(select(EngineState).where(EngineState.id == 1)).one()
+            current_day = state.current_day
+
+        # Try current_day, then fall back to latest available in agent.db
+        rows = fetch_all(
+            self.state_db,
+            """
+            SELECT * FROM machine_inventory
+            WHERE snapshot_date = ?
+            ORDER BY location_id, machine_id, ingredient_name
+            """,
+            (current_day.isoformat(),),
+        )
+        if not rows:
+            rows = fetch_all(
+                self.state_db,
+                """
+                SELECT * FROM machine_inventory
+                WHERE snapshot_date = (
+                    SELECT MAX(snapshot_date) FROM machine_inventory
+                )
+                ORDER BY location_id, machine_id, ingredient_name
+                """,
+            )
+
+        snap_date = rows[0]["snapshot_date"] if rows else current_day.isoformat()
+
+        # Group: location → machines → ingredients
+        locations: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            loc_id = int(row["location_id"])
+            if loc_id not in locations:
+                locations[loc_id] = {
+                    "location_id": loc_id,
+                    "location_name": row["location_name"],
+                    "machines": {},
+                }
+            machines = locations[loc_id]["machines"]
+            mid = int(row["machine_id"])
+            if mid not in machines:
+                machines[mid] = {
+                    "machine_id": mid,
+                    "machine_name": row["machine_name"],
+                    "ingredients": [],
+                }
+            machines[mid]["ingredients"].append({
+                "ingredient_id": int(row["ingredient_id"]),
+                "name": row["ingredient_name"],
+                "quantity": round(float(row["quantity_on_hand"]), 1),
+                "unit": row["unit"],
+            })
+
+        # Flatten machines dict to list
+        result = []
+        for loc in sorted(locations.values(), key=lambda x: x["location_id"]):
+            loc_out = {
+                "location_id": loc["location_id"],
+                "location_name": loc["location_name"],
+                "machines": sorted(loc["machines"].values(), key=lambda x: x["machine_id"]),
+            }
+            result.append(loc_out)
+
+        return {
+            "snapshot_date": str(snap_date),
+            "locations": result,
         }
 
     def run_backtest(self, *, start_day: date, end_day: date) -> list[dict[str, Any]]:

@@ -116,6 +116,17 @@ def create_app(
     def dashboard(days: int = 14, location_id: int | None = None) -> dict[str, Any]:
         return engine.dashboard_summary(days=days, location_id=location_id)
 
+    @app.get("/api/inventory")
+    def inventory() -> dict[str, Any]:
+        return engine.get_inventory()
+
+    @app.post("/api/inventory/sync")
+    def sync_inventory() -> dict[str, Any]:
+        st = engine.get_state()
+        current_day = date.fromisoformat(st["current_day"])
+        n = engine.sync_inventory(current_day)
+        return {"synced": n, "date": st["current_day"]}
+
     @app.post("/api/backtest")
     def backtest(req: BacktestRequest) -> list[dict[str, Any]]:
         return engine.run_backtest(start_day=req.start_day, end_day=req.end_day)

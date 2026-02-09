@@ -40,6 +40,8 @@ def load_product_list(path: Path = PRODUCT_LIST_PATH) -> list[str]:
 
 
 # --- PLACEHOLDER DATA (keep all placeholders together) ---
+# Always assume water is unlimited / does not need to be accounted for
+
 PRODUCT_INGREDIENTS: dict[str, list[IngredientSpec]] = {
     "Americano": [
         IngredientSpec("espresso_shot", 1, "shot"),
@@ -105,7 +107,6 @@ PRODUCT_INGREDIENTS: dict[str, list[IngredientSpec]] = {
     ],
     "Coffee with chocolate": [
         IngredientSpec("espresso_shot", 1, "shot"),
-        IngredientSpec("water", 150, "ml"),
         IngredientSpec("chocolate_powder", 10, "g"),
     ],
     "Cortado": [

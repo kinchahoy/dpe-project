@@ -3,30 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Daily Alert Engine</title>
+    <title>Operations Dashboard</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <div id="app" class="app">
       <header class="topbar">
         <div class="brand">
-          <div class="brand__name">Daily Alert Engine</div>
-          <div class="brand__hint">Manager inbox for location-specific next actions</div>
+          <div class="brand__name">Operations Dashboard</div>
+          <div class="brand__hint">Action items and performance overview for your locations</div>
         </div>
 
         <div class="controls">
           <div class="controls__row">
             <div class="pill" id="state-pill">Loading state…</div>
-            <button class="btn btn--ghost" id="reset-btn" type="button">Reset</button>
-            <button class="btn btn--ghost" id="run-btn" type="button">Run Current</button>
-            <button class="btn btn--primary" id="next-btn" type="button">Next Day</button>
+            <button class="btn btn--ghost" id="reset-btn" type="button">Start Over</button>
+            <button class="btn btn--ghost" id="run-btn" type="button">Check Today</button>
+            <button class="btn btn--primary" id="next-btn" type="button">Next Day &#9654;</button>
           </div>
           <div class="controls__row">
             <label class="field">
-              <span class="field__label">Skip to day</span>
+              <span class="field__label">Jump to date</span>
               <input class="field__input" id="skip-date" type="date" />
             </label>
-            <button class="btn btn--ghost" id="skip-btn" type="button">Skip</button>
+            <button class="btn btn--ghost" id="skip-btn" type="button">Go</button>
             <button class="btn btn--ghost" id="refresh-btn" type="button">Refresh</button>
           </div>
         </div>
@@ -35,7 +35,7 @@
       <main class="main">
         <section class="panel inbox">
           <div class="panel__head">
-            <div class="panel__title">Alerts Inbox</div>
+            <div class="panel__title">Action Items</div>
             <div class="panel__sub" id="alerts-meta">Loading…</div>
           </div>
           <div class="panel__body">
@@ -45,17 +45,17 @@
 
         <section class="panel detail">
           <div class="panel__head">
-            <div class="panel__title">Alert Detail</div>
-            <div class="panel__sub" id="detail-meta">Select an alert</div>
+            <div class="panel__title">Details</div>
+            <div class="panel__sub" id="detail-meta">Select an item to view details</div>
           </div>
           <div class="panel__body">
-            <div id="detail" class="detail__empty">No alert selected.</div>
+            <div id="detail" class="detail__empty">Click an item on the left to see details and take action.</div>
           </div>
         </section>
 
         <section class="panel dashboard">
           <div class="panel__head">
-            <div class="panel__title">Dashboard (14 days)</div>
+            <div class="panel__title">Performance Summary</div>
             <div class="panel__sub" id="dash-meta"></div>
           </div>
           <div class="panel__body">

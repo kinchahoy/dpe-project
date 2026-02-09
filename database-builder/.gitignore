@@ -1,0 +1,11 @@
+.venv/
+.vscode/
+.ruff_cache/
+__pycache__/
+
+artifacts/
+*.db
+*.db-journal
+
+product-list.txt
+proofs/logs/

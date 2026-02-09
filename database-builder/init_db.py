@@ -1,24 +1,37 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 from glob import glob
 from pathlib import Path
 from typing import Dict
+from uuid import uuid4
 
 from loguru import logger
-from sqlmodel import Session, select
+from sqlalchemy import delete
+from sqlmodel import Session, col, select
 
 from db import (
     Ingredient,
     Location,
     Machine,
+    MachineIngredientCapacity,
     Product,
     ProductIngredient,
+    SimRun,
     Transaction,
-    create_db,
-    engine,
+    FACTS_DB_FILE,
+    OBSERVED_DB_FILE,
+    SIM_DB_FILE,
+    create_facts_db,
+    create_observed_db,
+    create_sim_db,
+    facts_engine,
+    observed_engine,
+    sim_engine,
 )
+from init_daily_aggregates import rebuild_daily_aggregates
 from init_daily_ingredient_projections import rebuild_daily_ingredient_projections
 from init_daily_projections import rebuild_daily_projections
 from init_inventory_snapshots import rebuild_inventory_snapshots
@@ -58,7 +71,7 @@ PLACEHOLDER_UA_MACHINE_1 = {
 PLACEHOLDER_UA_MACHINE_2 = {
     "name": "UA-Cafe-2",
     "serial_number": "UA-VM-0002",
-    "model": "CoffeeVend-X1",
+    "model": "CoffeeVend-X2",
     "installed_at": datetime(2024, 2, 10, 9, 0, 0),
     "last_serviced_at": datetime(2025, 2, 10, 9, 0, 0),
     "current_hours": 1180,
@@ -66,7 +79,7 @@ PLACEHOLDER_UA_MACHINE_2 = {
 PLACEHOLDER_SF_MACHINE_3 = {
     "name": "SF-Cafe-3",
     "serial_number": "US-SF-0003",
-    "model": "CoffeeVend-X2",
+    "model": "CoffeeVend-X1",
     "installed_at": datetime(2025, 1, 20, 9, 0, 0),
     "last_serviced_at": datetime(2025, 12, 20, 9, 0, 0),
     "current_hours": 900,
@@ -84,6 +97,12 @@ PLACEHOLDER_SF_MACHINE_4 = {
 
 def _parse_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _reset_db_files() -> None:
+    for path in (FACTS_DB_FILE, OBSERVED_DB_FILE, SIM_DB_FILE):
+        if path.exists():
+            path.unlink()
 
 
 def _get_or_create_location(session: Session, data: dict) -> Location:
@@ -153,56 +172,216 @@ def _seed_ingredients(session: Session) -> None:
                 )
 
 
+def _canonicalize_ingredient_key(label: str) -> str:
+    key = label.strip().lower()
+    key = re.sub(r"[^a-z0-9]+", "_", key)
+    key = re.sub(r"_+", "_", key).strip("_")
+    return key
+
+
+def _seed_machine_capacities(session: Session, capacities_md: Path) -> None:
+    """
+    Seed `machine_ingredient_capacity` from `machine_capacities.md`.
+
+    The markdown uses human-readable ingredient names; we normalize them to the
+    canonical ingredient keys used in `product_ing.py` (e.g. "Espresso Shot" -> "espresso_shot").
+    """
+    if not capacities_md.exists():
+        logger.warning("No machine capacities file found at {path}", path=capacities_md)
+        return
+
+    ingredient_id_by_name = {
+        ing.name: ing.id for ing in session.exec(select(Ingredient)).all()
+    }
+
+    current_model: str | None = None
+    rows: list[MachineIngredientCapacity] = []
+    for raw_line in capacities_md.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            current_model = line.removeprefix("## ").split("(", 1)[0].strip()
+            continue
+        if current_model is None:
+            continue
+        if not line.startswith("|"):
+            continue
+        if "Ingredient" in line and "Capacity" in line:
+            continue
+        if set(line.replace("|", "").strip()) == {"-"}:
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) < 4:
+            continue
+        ingredient_label, _avg_daily, cap_value, unit = parts[:4]
+        notes = parts[4] if len(parts) >= 5 else ""
+
+        ingredient_name = _canonicalize_ingredient_key(ingredient_label)
+        ingredient_id = ingredient_id_by_name.get(ingredient_name)
+        if ingredient_id is None:
+            logger.warning(
+                "Capacity references unknown ingredient '{ingredient}' (normalized='{norm}') for model '{model}'",
+                ingredient=ingredient_label,
+                norm=ingredient_name,
+                model=current_model,
+            )
+            continue
+
+        cap_clean = cap_value.replace(",", "").strip()
+        try:
+            capacity = float(cap_clean)
+        except ValueError:
+            logger.warning(
+                "Could not parse capacity '{cap}' for ingredient '{ingredient}' model '{model}'",
+                cap=cap_value,
+                ingredient=ingredient_label,
+                model=current_model,
+            )
+            continue
+
+        rows.append(
+            MachineIngredientCapacity(
+                machine_model=current_model,
+                ingredient_id=int(ingredient_id),
+                capacity=capacity,
+                unit=unit.strip(),
+                notes=notes.strip(),
+            )
+        )
+
+    session.exec(delete(MachineIngredientCapacity))
+    session.add_all(rows)
+    session.commit()
+    logger.info("Seeded machine ingredient capacities: {count} rows.", count=len(rows))
+
+
+def _create_sim_run_from_observed(*, seed_days: int = 30) -> str:
+    create_sim_db()
+    with Session(observed_engine) as obs:
+        max_date = obs.exec(
+            select(col(Transaction.date)).order_by(col(Transaction.date).desc())
+        ).first()
+        min_date = obs.exec(
+            select(col(Transaction.date)).order_by(col(Transaction.date).asc())
+        ).first()
+
+    if max_date is None or min_date is None:
+        raise RuntimeError("No observed transactions; cannot create a sim run.")
+
+    seed_end = max_date
+    requested_start = seed_end - timedelta(days=seed_days - 1)
+    seed_start = max(min_date, requested_start)
+
+    run_id = str(uuid4())
+    with Session(sim_engine) as sim:
+        sim.add(
+            SimRun(
+                id=run_id,
+                created_at=datetime.now(tz=timezone.utc),
+                seed_start_date=seed_start,
+                seed_end_date=seed_end,
+                notes=f"seed_window={seed_days}d (observed {seed_start}..{seed_end})",
+            )
+        )
+        sim.commit()
+    logger.info(
+        "Created sim run: {run_id} seed={start}..{end}",
+        run_id=run_id,
+        start=seed_start,
+        end=seed_end,
+    )
+    return run_id
+
+
 def load_csvs() -> None:
+    _reset_db_files()
+    create_facts_db()
+    create_observed_db()
+    create_sim_db()
+
     product_names = write_product_list_from_csvs()
-    create_db()
     files = sorted(glob("index_*.csv"))
     if not files:
         logger.warning("No index_*.csv files found")
         return
 
-    with Session(engine) as session:
-        ua_location = _get_or_create_location(session, PLACEHOLDER_UA_LOCATION)
-        sf_location = _get_or_create_location(session, PLACEHOLDER_SF_LOCATION)
+    with Session(facts_engine) as facts:
+        ua_location = _get_or_create_location(facts, PLACEHOLDER_UA_LOCATION)
+        sf_location = _get_or_create_location(facts, PLACEHOLDER_SF_LOCATION)
+        assert ua_location.id is not None
+        assert sf_location.id is not None
+        ua_location_id = int(ua_location.id)
+        sf_location_id = int(sf_location.id)
+
         ua_machine_1 = _get_or_create_machine(
-            session, location_id=ua_location.id, data=PLACEHOLDER_UA_MACHINE_1
+            facts, location_id=ua_location_id, data=PLACEHOLDER_UA_MACHINE_1
         )
         ua_machine_2 = _get_or_create_machine(
-            session, location_id=ua_location.id, data=PLACEHOLDER_UA_MACHINE_2
+            facts, location_id=ua_location_id, data=PLACEHOLDER_UA_MACHINE_2
         )
         sf_machine_3 = _get_or_create_machine(
-            session, location_id=sf_location.id, data=PLACEHOLDER_SF_MACHINE_3
+            facts, location_id=sf_location_id, data=PLACEHOLDER_SF_MACHINE_3
         )
         sf_machine_4 = _get_or_create_machine(
-            session, location_id=sf_location.id, data=PLACEHOLDER_SF_MACHINE_4
+            facts, location_id=sf_location_id, data=PLACEHOLDER_SF_MACHINE_4
         )
-        machine_map = {
-            "index_1.csv": (ua_machine_1, sf_machine_3),
-            "index_2.csv": (ua_machine_2, sf_machine_4),
-        }
+        facts.commit()
+        assert ua_machine_1.id is not None
+        assert ua_machine_2.id is not None
+        assert sf_machine_3.id is not None
+        assert sf_machine_4.id is not None
+        ua_machine_1_id = int(ua_machine_1.id)
+        ua_machine_2_id = int(ua_machine_2.id)
+        sf_machine_3_id = int(sf_machine_3.id)
+        sf_machine_4_id = int(sf_machine_4.id)
+
+        # Seed products (from CSV scan) before loading transactions.
         product_cache: Dict[str, int] = {}
+        for name in product_names:
+            canonical_name = canonicalize_product_name(name)
+            existing = facts.exec(
+                select(Product).where(Product.name == canonical_name)
+            ).first()
+            if existing is None:
+                existing = Product(name=canonical_name)
+                facts.add(existing)
+                facts.flush()
+            product_cache[canonical_name] = int(existing.id)
+        facts.commit()
+
+        # Seed ingredients + recipes + capacities (facts).
+        _seed_ingredients(facts)
+        facts.commit()
+        _seed_machine_capacities(facts, Path("machine_capacities.md"))
+
+        machine_map = {
+            "index_1.csv": (ua_machine_1_id, sf_machine_3_id),
+            "index_2.csv": (ua_machine_2_id, sf_machine_4_id),
+        }
+
+    with Session(observed_engine) as obs:
+        obs.exec(delete(Transaction))
+        obs.commit()
+
         for f in files:
             path = Path(f)
             machine_pair = machine_map.get(path.name)
             if machine_pair is None:
                 logger.warning("No machine mapping for {file}", file=path.name)
                 continue
-            ua_machine, sf_machine = machine_pair
+            ua_machine_id, sf_machine_id = machine_pair
             with path.open(newline="", encoding="utf-8") as fh:
                 reader = csv.DictReader(fh)
                 for row_idx, row in enumerate(reader, start=1):
                     name = canonicalize_product_name(row["coffee_name"])
                     product_id = product_cache.get(name)
                     if product_id is None:
-                        existing = session.exec(
-                            select(Product).where(Product.name == name)
-                        ).first()
-                        if existing is None:
-                            existing = Product(name=name)
-                            session.add(existing)
-                            session.flush()
-                        product_cache[name] = existing.id
-                        product_id = existing.id
+                        logger.warning(
+                            "Unknown product '{name}' in {file}:{row}; skipping row",
+                            name=name,
+                            file=path.name,
+                            row=row_idx,
+                        )
+                        continue
 
                     card = row.get("card")
                     base_amount = float(row["money"])
@@ -211,8 +390,8 @@ def load_csvs() -> None:
 
                     ua_txn = Transaction(
                         product_id=product_id,
-                        location_id=ua_location.id,
-                        machine_id=ua_machine.id,
+                        location_id=ua_location_id,
+                        machine_id=ua_machine_id,
                         date=base_date,
                         occurred_at=occurred_at,
                         cash_type=row["cash_type"],
@@ -224,8 +403,8 @@ def load_csvs() -> None:
                     )
                     sf_txn = Transaction(
                         product_id=product_id,
-                        location_id=sf_location.id,
-                        machine_id=sf_machine.id,
+                        location_id=sf_location_id,
+                        machine_id=sf_machine_id,
                         date=base_date,
                         occurred_at=occurred_at,
                         cash_type=row["cash_type"],
@@ -235,32 +414,32 @@ def load_csvs() -> None:
                         source_file=path.name,
                         source_row=row_idx,
                     )
-                    session.add(ua_txn)
-                    session.add(sf_txn)
-            session.commit()
+                    obs.add(ua_txn)
+                    obs.add(sf_txn)
+            obs.commit()
             logger.info("Loaded {file}", file=path.name)
 
-        _seed_ingredients(session)
-        session.commit()
+    if product_names:
+        missing = [
+            name
+            for name in product_names
+            if canonicalize_product_name(name)
+            not in {canonicalize_product_name(k) for k in PRODUCT_INGREDIENTS}
+        ]
+        if missing:
+            logger.warning(
+                "Missing ingredient mappings for: {names}",
+                names=", ".join(missing),
+            )
 
-        if product_names:
-            missing = [
-                name
-                for name in product_names
-                if canonicalize_product_name(name)
-                not in {canonicalize_product_name(k) for k in PRODUCT_INGREDIENTS}
-            ]
-            if missing:
-                logger.warning(
-                    "Missing ingredient mappings for: {names}",
-                    names=", ".join(missing),
-                )
+    rebuild_daily_aggregates()
+    run_id = _create_sim_run_from_observed(seed_days=30)
 
-    init_price_schedule()
-    update_expected_prices()
-    rebuild_inventory_snapshots()
-    rebuild_daily_projections()
-    rebuild_daily_ingredient_projections()
+    init_price_schedule(run_id=run_id)
+    update_expected_prices(run_id=run_id)
+    rebuild_inventory_snapshots(run_id=run_id)
+    rebuild_daily_projections(run_id=run_id)
+    rebuild_daily_ingredient_projections(run_id=run_id)
 
 
 if __name__ == "__main__":

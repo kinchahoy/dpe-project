@@ -5,13 +5,22 @@ from datetime import date as Date
 from pathlib import Path
 
 from loguru import logger
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from db import Ingredient, Product, ProductIngredient, Transaction, engine
+from db import (
+    Ingredient,
+    Product,
+    ProductIngredient,
+    Transaction,
+    create_facts_db,
+    create_observed_db,
+    facts_engine,
+    observed_engine,
+)
 
 
 def _configure_logging() -> Path:
@@ -30,7 +39,9 @@ def run_proof() -> int:
     logger.info("PROOF START: Days in July with <= 2 espresso shots consumed")
 
     logger.info("Step 1: Resolve ingredient id for espresso_shot")
-    with Session(engine) as session:
+    create_facts_db()
+    create_observed_db()
+    with Session(facts_engine) as session:
         products = session.exec(select(Product)).all()
         product_name_by_id = {row.id: row.name for row in products}
 
@@ -70,12 +81,13 @@ def run_proof() -> int:
         logger.info(
             "Step 3: Aggregate July espresso-shot consumption from raw transactions"
         )
+
+    with Session(observed_engine) as session:
         txns = session.exec(
             select(Transaction.date, Transaction.machine_id, Transaction.product_id)
-            .where(Transaction.date.is_not(None))
+            .where(col(Transaction.date).is_not(None))
             .order_by(Transaction.date, Transaction.machine_id)
         ).all()
-
     machine_day_shots: dict[tuple, float] = {}
     for date_value, machine_id, product_id in txns:
         if date_value.month != 7:
@@ -126,7 +138,7 @@ def run_proof() -> int:
         target_key[0].isoformat(),
         target_key[1],
     )
-    with Session(engine) as session:
+    with Session(observed_engine) as session:
         day_txns = session.exec(
             select(Transaction)
             .where(Transaction.date == target_key[0])

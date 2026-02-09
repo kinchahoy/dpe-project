@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date as Date
 from datetime import timedelta
+from typing import cast
 
 import pandas as pd
 import polars as pl
@@ -10,7 +11,15 @@ from sqlalchemy import delete
 from sqlmodel import Session, select
 from statsmodels.tsa.holtwinters import ExponentialSmoothing, SimpleExpSmoothing
 
-from db import DailyProjection, Transaction, create_db, engine
+from db import (
+    SimDailyProjection,
+    SimRun,
+    Transaction,
+    create_observed_db,
+    create_sim_db,
+    observed_engine,
+    sim_engine,
+)
 
 FORECAST_DAYS = 10
 TRAINING_WINDOW_DAYS = 365
@@ -22,15 +31,23 @@ MIX_SHORT_WINDOW_DAYS = 56
 MIX_BLEND_WEIGHT_SHORT = 0.7
 
 
-def _load_transactions() -> pl.DataFrame:
-    with Session(engine) as session:
+def _seed_window(*, run_id: str) -> tuple[Date, Date]:
+    with Session(sim_engine) as session:
+        run = session.get(SimRun, run_id)
+        if run is None:
+            raise ValueError(f"Unknown run_id: {run_id}")
+        return (run.seed_start_date, run.seed_end_date)
+
+
+def _load_transactions(*, seed_start: Date, seed_end: Date) -> pl.DataFrame:
+    with Session(observed_engine) as session:
         rows = session.exec(
             select(
                 Transaction.date,
                 Transaction.location_id,
                 Transaction.machine_id,
                 Transaction.product_id,
-            )
+            ).where((Transaction.date >= seed_start) & (Transaction.date <= seed_end))
         ).all()
 
     if not rows:
@@ -170,14 +187,19 @@ def _product_mix(training_df: pl.DataFrame, train_end: Date) -> list[dict]:
     return mix.to_dicts()
 
 
-def rebuild_daily_projections() -> None:
-    create_db()
-    txns = _load_transactions()
+def rebuild_daily_projections(*, run_id: str) -> None:
+    create_observed_db()
+    create_sim_db()
+    seed_start, seed_end = _seed_window(run_id=run_id)
+    txns = _load_transactions(seed_start=seed_start, seed_end=seed_end)
     if txns.is_empty():
-        logger.warning("No transactions found. Skipping daily projections.")
+        logger.warning(
+            "No seed-window transactions found for run_id={run_id}. Skipping daily projections.",
+            run_id=run_id,
+        )
         return
 
-    rows: list[DailyProjection] = []
+    rows: list[SimDailyProjection] = []
     pair_rows = (
         txns.select("location_id", "machine_id")
         .unique()
@@ -195,8 +217,12 @@ def rebuild_daily_projections() -> None:
         if pair_df.is_empty():
             continue
 
-        train_start_full = pair_df.get_column("date").min()
-        projection_dates = (
+        train_start_full_raw = pair_df.get_column("date").min()
+        if train_start_full_raw is None:
+            continue
+        train_start_full = cast(Date, train_start_full_raw)
+
+        projection_dates_raw = (
             pair_df.select("date")
             .unique()
             .sort("date")
@@ -204,6 +230,9 @@ def rebuild_daily_projections() -> None:
             .get_column("date")
             .to_list()
         )
+        projection_dates = [
+            cast(Date, d) for d in projection_dates_raw if d is not None
+        ]
 
         for train_end in projection_dates:
             requested_start = train_end - timedelta(days=TRAINING_WINDOW_DAYS - 1)
@@ -228,7 +257,8 @@ def rebuild_daily_projections() -> None:
                 share = float(product_row["share"])
                 for idx, forecast_date in enumerate(forecast_dates):
                     rows.append(
-                        DailyProjection(
+                        SimDailyProjection(
+                            run_id=run_id,
                             projection_date=train_end,
                             forecast_date=forecast_date,
                             training_start=train_start,
@@ -247,7 +277,8 @@ def rebuild_daily_projections() -> None:
 
             for idx, forecast_date in enumerate(forecast_dates):
                 rows.append(
-                    DailyProjection(
+                    SimDailyProjection(
+                        run_id=run_id,
                         projection_date=train_end,
                         forecast_date=forecast_date,
                         training_start=train_start,
@@ -264,8 +295,10 @@ def rebuild_daily_projections() -> None:
                     )
                 )
 
-    with Session(engine) as session:
-        session.exec(delete(DailyProjection))
+    with Session(sim_engine) as session:
+        session.exec(
+            delete(SimDailyProjection).where(SimDailyProjection.run_id == run_id)
+        )
         session.commit()
         session.add_all(rows)
         session.commit()
@@ -274,4 +307,6 @@ def rebuild_daily_projections() -> None:
 
 
 if __name__ == "__main__":
-    rebuild_daily_projections()
+    raise SystemExit(
+        "Run via init_db.py (needs a sim run id). Example: python init_db.py"
+    )

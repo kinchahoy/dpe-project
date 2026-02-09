@@ -5,26 +5,42 @@ from datetime import timedelta
 import polars as pl
 from loguru import logger
 from sqlalchemy import delete
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from db import (
-    DailyIngredientProjection,
-    DailyProjection,
     Ingredient,
     ProductIngredient,
+    SimDailyIngredientProjection,
+    SimDailyProjection,
+    SimRun,
     Transaction,
-    create_db,
-    engine,
+    create_facts_db,
+    create_observed_db,
+    create_sim_db,
+    facts_engine,
+    observed_engine,
+    sim_engine,
 )
 
 MIX_SHORT_WINDOW_DAYS = 56
 MIX_BLEND_WEIGHT_SHORT = 0.7
 
 
-def _load_total_projection_rows() -> pl.DataFrame:
-    with Session(engine) as session:
+def _seed_window(*, run_id: str):
+    with Session(sim_engine) as session:
+        run = session.get(SimRun, run_id)
+        if run is None:
+            raise ValueError(f"Unknown run_id: {run_id}")
+        return (run.seed_start_date, run.seed_end_date)
+
+
+def _load_total_projection_rows(*, run_id: str) -> pl.DataFrame:
+    with Session(sim_engine) as session:
         rows = session.exec(
-            select(DailyProjection).where(DailyProjection.product_id.is_(None))
+            select(SimDailyProjection).where(
+                col(SimDailyProjection.run_id) == run_id,
+                col(SimDailyProjection.product_id).is_(None),
+            )
         ).all()
 
     if not rows:
@@ -58,15 +74,15 @@ def _load_total_projection_rows() -> pl.DataFrame:
     ).sort(["location_id", "machine_id", "projection_date", "forecast_date"])
 
 
-def _load_transactions() -> pl.DataFrame:
-    with Session(engine) as session:
+def _load_transactions(*, seed_start, seed_end) -> pl.DataFrame:
+    with Session(observed_engine) as session:
         rows = session.exec(
             select(
                 Transaction.date,
                 Transaction.location_id,
                 Transaction.machine_id,
                 Transaction.product_id,
-            )
+            ).where((Transaction.date >= seed_start) & (Transaction.date <= seed_end))
         ).all()
     if not rows:
         return pl.DataFrame(
@@ -91,7 +107,7 @@ def _load_transactions() -> pl.DataFrame:
 
 
 def _load_product_ingredients() -> pl.DataFrame:
-    with Session(engine) as session:
+    with Session(facts_engine) as session:
         rows = session.exec(
             select(
                 ProductIngredient.product_id,
@@ -116,7 +132,7 @@ def _load_product_ingredients() -> pl.DataFrame:
 
 
 def _load_ingredient_units() -> dict[int, str]:
-    with Session(engine) as session:
+    with Session(facts_engine) as session:
         rows = session.exec(select(Ingredient.id, Ingredient.unit)).all()
     return {row[0]: row[1] for row in rows}
 
@@ -166,16 +182,20 @@ def _ingredient_rates(
     return rates.select("ingredient_id", "rate").to_dicts()
 
 
-def rebuild_daily_ingredient_projections() -> None:
-    create_db()
-    total_proj_df = _load_total_projection_rows()
+def rebuild_daily_ingredient_projections(*, run_id: str) -> None:
+    create_facts_db()
+    create_observed_db()
+    create_sim_db()
+
+    seed_start, seed_end = _seed_window(run_id=run_id)
+    total_proj_df = _load_total_projection_rows(run_id=run_id)
     if total_proj_df.is_empty():
         logger.warning(
             "No total daily projections found. Skipping ingredient forecasts."
         )
         return
 
-    txns_df = _load_transactions()
+    txns_df = _load_transactions(seed_start=seed_start, seed_end=seed_end)
     recipe_df = _load_product_ingredients()
     ingredient_units = _load_ingredient_units()
     if txns_df.is_empty() or recipe_df.is_empty() or not ingredient_units:
@@ -184,7 +204,7 @@ def rebuild_daily_ingredient_projections() -> None:
         )
         return
 
-    rows: list[DailyIngredientProjection] = []
+    rows: list[SimDailyIngredientProjection] = []
     scenario_rows = (
         total_proj_df.select(
             "projection_date",
@@ -227,7 +247,8 @@ def rebuild_daily_ingredient_projections() -> None:
                 ingredient_id = int(item["ingredient_id"])
                 rate = float(item["rate"])
                 rows.append(
-                    DailyIngredientProjection(
+                    SimDailyIngredientProjection(
+                        run_id=run_id,
                         projection_date=forecast_row["projection_date"],
                         forecast_date=forecast_row["forecast_date"],
                         training_start=forecast_row["training_start"],
@@ -241,8 +262,12 @@ def rebuild_daily_ingredient_projections() -> None:
                     )
                 )
 
-    with Session(engine) as session:
-        session.exec(delete(DailyIngredientProjection))
+    with Session(sim_engine) as session:
+        session.exec(
+            delete(SimDailyIngredientProjection).where(
+                SimDailyIngredientProjection.run_id == run_id
+            )
+        )
         session.commit()
         session.add_all(rows)
         session.commit()
@@ -251,4 +276,6 @@ def rebuild_daily_ingredient_projections() -> None:
 
 
 if __name__ == "__main__":
-    rebuild_daily_ingredient_projections()
+    raise SystemExit(
+        "Run via init_db.py (needs a sim run id). Example: python init_db.py"
+    )
