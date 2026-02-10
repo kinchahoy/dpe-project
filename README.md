@@ -1,4 +1,4 @@
-# dcapital (Vendagent Demo)
+# Vendagent Demo for d capital
 
 This repo contains a proof-of-concept “Vendagent” vending operations assistant:
 - a AI powered alert engine (sandboxed Python scripts)
