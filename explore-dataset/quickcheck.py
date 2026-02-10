@@ -12,14 +12,22 @@ def load_csvs() -> pl.DataFrame:
     import kagglehub
     from kagglehub import KaggleDatasetAdapter
 
-    df1 = kagglehub.dataset_load(
-        KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_1.csv"
-    ).collect().with_columns(pl.lit("index_1.csv").alias("source_file"))
-    df2 = kagglehub.dataset_load(
-        KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_2.csv"
-    ).collect().with_columns(
-        pl.lit(None).cast(pl.Utf8).alias("card"),
-        pl.lit("index_2.csv").alias("source_file"),
+    df1 = (
+        kagglehub.dataset_load(
+            KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_1.csv"
+        )
+        .collect()
+        .with_columns(pl.lit("index_1.csv").alias("source_file"))
+    )
+    df2 = (
+        kagglehub.dataset_load(
+            KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_2.csv"
+        )
+        .collect()
+        .with_columns(
+            pl.lit(None).cast(pl.Utf8).alias("card"),
+            pl.lit("index_2.csv").alias("source_file"),
+        )
     )
     df2 = df2.select(df1.columns)
     return pl.concat([df1, df2])
@@ -38,9 +46,19 @@ def load_db_transactions() -> pl.DataFrame:
         """
     ).fetchall()
     cols = [
-        "id", "product_id", "coffee_name", "location_id", "machine_id",
-        "date", "occurred_at", "cash_type", "card_token", "amount",
-        "currency", "source_file", "source_row",
+        "id",
+        "product_id",
+        "coffee_name",
+        "location_id",
+        "machine_id",
+        "date",
+        "occurred_at",
+        "cash_type",
+        "card_token",
+        "amount",
+        "currency",
+        "source_file",
+        "source_row",
     ]
     conn.close()
     return pl.DataFrame(dict(zip(cols, zip(*rows))), orient="col")
@@ -56,7 +74,9 @@ def check(label: str, ok: bool, detail: str = ""):
 def main():
     logger.info("Loading CSVs via kagglehub...")
     csv_df = load_csvs()
-    logger.info(f"CSV rows: {csv_df.height} (index_1: {csv_df.filter(pl.col('source_file')=='index_1.csv').height}, index_2: {csv_df.filter(pl.col('source_file')=='index_2.csv').height})")
+    logger.info(
+        f"CSV rows: {csv_df.height} (index_1: {csv_df.filter(pl.col('source_file') == 'index_1.csv').height}, index_2: {csv_df.filter(pl.col('source_file') == 'index_2.csv').height})"
+    )
 
     logger.info("Loading coffee.db transactions...")
     db_df = load_db_transactions()
@@ -73,8 +93,12 @@ def main():
     )
 
     # --- Check 2: Source file mapping ---
-    db_src_counts = db_ua.group_by("source_file").agg(pl.len().alias("n")).sort("source_file")
-    csv_src_counts = csv_df.group_by("source_file").agg(pl.len().alias("n")).sort("source_file")
+    db_src_counts = (
+        db_ua.group_by("source_file").agg(pl.len().alias("n")).sort("source_file")
+    )
+    csv_src_counts = (
+        csv_df.group_by("source_file").agg(pl.len().alias("n")).sort("source_file")
+    )
     logger.info(f"DB source_file counts:\n{db_src_counts}")
     logger.info(f"CSV source_file counts:\n{csv_src_counts}")
     check(

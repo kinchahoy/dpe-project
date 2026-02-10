@@ -78,7 +78,9 @@ def _(pl, sqlite3):
 @app.cell
 def _(mo, projections_df):
     _locations = sorted(projections_df["location"].unique().to_list())
-    location_dd = mo.ui.dropdown(options=_locations, value=_locations[0], label="Location")
+    location_dd = mo.ui.dropdown(
+        options=_locations, value=_locations[0], label="Location"
+    )
 
     _products = sorted(projections_df["product"].unique().to_list())
     product_dd = mo.ui.dropdown(options=_products, value=_products[0], label="Product")
@@ -160,10 +162,13 @@ def _(compared_df, has_overlap, mo, pl):
 def _(alt, compared_df, has_overlap, mo, pl):
     if has_overlap:
         _overlap = compared_df.filter(pl.col("actual_units").is_not_null())
-        _max_val = max(
-            _overlap["forecast_units"].max(),
-            _overlap["actual_units"].max(),
-        ) * 1.1
+        _max_val = (
+            max(
+                _overlap["forecast_units"].max(),
+                _overlap["actual_units"].max(),
+            )
+            * 1.1
+        )
 
         _perfect = (
             alt.Chart(pl.DataFrame({"x": [0.0, _max_val], "y": [0.0, _max_val]}))
@@ -188,13 +193,10 @@ def _(alt, compared_df, has_overlap, mo, pl):
             )
         )
 
-        _chart = (
-            (_perfect + _scatter)
-            .properties(
-                title="Forecast vs Actual (perfect = diagonal line)",
-                width=450,
-                height=400,
-            )
+        _chart = (_perfect + _scatter).properties(
+            title="Forecast vs Actual (perfect = diagonal line)",
+            width=450,
+            height=400,
         )
         mo.ui.altair_chart(_chart)
     return
@@ -238,10 +240,11 @@ def _(actuals_df, location_dd, mo, pl, projections_df):
     )
 
     # Join with actuals on date + product + location names (avoids ID type mismatches)
-    _act_for_join = actuals_df.filter(
-        pl.col("location") == location_dd.value
-    ).select(
-        pl.col("date"), "product", "location", "actual_units",
+    _act_for_join = actuals_df.filter(pl.col("location") == location_dd.value).select(
+        pl.col("date"),
+        "product",
+        "location",
+        "actual_units",
     )
 
     _with_actuals = _proj_with_horizon.join(
@@ -258,20 +261,20 @@ def _(actuals_df, location_dd, mo, pl, projections_df):
         _h = df.filter(pl.col("horizon") == h)
         if _h.height == 0:
             return pl.DataFrame()
-        return (
-            _h.group_by("product")
-            .agg(
-                pl.lit(h).alias("horizon_days"),
-                pl.col("abs_error").mean().round(2).alias("MAE"),
-                (pl.col("error").pow(2).mean().sqrt()).round(2).alias("RMSE"),
-                pl.col("error").mean().round(2).alias("bias"),
-                (
-                    pl.when(pl.col("actual_units") > 0)
-                    .then(pl.col("abs_error") / pl.col("actual_units") * 100)
-                    .otherwise(None)
-                ).mean().round(1).alias("MAPE_%"),
-                pl.col("error").len().alias("n_obs"),
+        return _h.group_by("product").agg(
+            pl.lit(h).alias("horizon_days"),
+            pl.col("abs_error").mean().round(2).alias("MAE"),
+            (pl.col("error").pow(2).mean().sqrt()).round(2).alias("RMSE"),
+            pl.col("error").mean().round(2).alias("bias"),
+            (
+                pl.when(pl.col("actual_units") > 0)
+                .then(pl.col("abs_error") / pl.col("actual_units") * 100)
+                .otherwise(None)
             )
+            .mean()
+            .round(1)
+            .alias("MAPE_%"),
+            pl.col("error").len().alias("n_obs"),
         )
 
     _h1 = _metrics_for_horizon(_with_actuals, 1)
@@ -305,7 +308,11 @@ def _(accuracy_by_horizon, alt, mo, pl):
                 color="horizon:N",
                 xOffset="horizon:N",
                 column=alt.Column("variable:N", title="Metric"),
-                tooltip=["product:N", "horizon:N", alt.Tooltip("value:Q", format=",.2f")],
+                tooltip=[
+                    "product:N",
+                    "horizon:N",
+                    alt.Tooltip("value:Q", format=",.2f"),
+                ],
             )
             .properties(width=300, height=250)
         )
@@ -339,11 +346,8 @@ def _(act_filtered, alt, mo, pl, proj_filtered):
     )
 
     # Actuals with 7-day rolling average
-    _actuals = (
-        act_filtered.sort("date")
-        .with_columns(
-            pl.col("actual_units").rolling_mean(window_size=7).alias("rolling_7d"),
-        )
+    _actuals = act_filtered.sort("date").with_columns(
+        pl.col("actual_units").rolling_mean(window_size=7).alias("rolling_7d"),
     )
 
     # Window: from 60 days before earliest forecast through end
@@ -386,17 +390,17 @@ def _(act_filtered, alt, mo, pl, proj_filtered):
         .encode(
             x=alt.X("date:T"),
             y=alt.Y("rolling_7d:Q"),
-            tooltip=["date:T", alt.Tooltip("rolling_7d:Q", format=",.1f", title="7d avg")],
+            tooltip=[
+                "date:T",
+                alt.Tooltip("rolling_7d:Q", format=",.1f", title="7d avg"),
+            ],
         )
     )
 
-    _chart = (
-        (_act_line + _roll_line + _spaghetti)
-        .properties(
-            title="Each 10-day projection run (thin red) vs actuals (blue) & 7d avg (dashed red)",
-            width=750,
-            height=350,
-        )
+    _chart = (_act_line + _roll_line + _spaghetti).properties(
+        title="Each 10-day projection run (thin red) vs actuals (blue) & 7d avg (dashed red)",
+        width=750,
+        height=350,
     )
     mo.ui.altair_chart(_chart)
     return
@@ -474,10 +478,11 @@ def _(actuals_df, mo, pl, projections_df):
     _summary = (
         _forecast_avg.join(_recent_avg, on=["product", "location"], how="left")
         .with_columns(
-            ((pl.col("forecast_avg") - pl.col("recent_30d_avg"))
-             / pl.col("recent_30d_avg")
-             * 100)
-            .alias("pct_diff"),
+            (
+                (pl.col("forecast_avg") - pl.col("recent_30d_avg"))
+                / pl.col("recent_30d_avg")
+                * 100
+            ).alias("pct_diff"),
         )
         .sort("product", "location")
     )

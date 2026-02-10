@@ -4,7 +4,7 @@ from pathlib import Path
 
 MAX_SCRIPT_BUDGET = 10
 
-SCRIPTS_DIR = Path(__file__).parent / "scripts"
+SCRIPTS_DIR = Path(__file__).parent / "scripts_sandbox"
 
 
 def discover_scripts(scripts_dir: Path | None = None) -> list[tuple[str, str]]:

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Operations Dashboard</title>
+    <title>Vendagent Ops Center</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -16,7 +16,16 @@
 
         <div class="controls">
           <div class="controls__row">
+            <label class="field field--compact">
+              <span class="field__label">Core role</span>
+              <select class="field__input field__input--compact" id="role-select">
+                <option value="overall_manager" selected>Overall manager (all locations)</option>
+                <option value="us_manager">US manager (San Francisco, Location 2)</option>
+                <option value="europe_manager">Europe manager (Lviv, Location 1)</option>
+              </select>
+            </label>
             <div class="pill" id="state-pill">Loading state…</div>
+            <button class="btn btn--ghost" id="about-btn" type="button">About</button>
             <button class="btn btn--ghost" id="reset-btn" type="button">Start Over</button>
             <button class="btn btn--ghost" id="run-btn" type="button">Check Today</button>
             <button class="btn btn--primary" id="next-btn" type="button">Next Day &#9654;</button>
@@ -43,29 +52,84 @@
           </div>
         </section>
 
-        <section class="panel detail">
-          <div class="panel__head">
-            <div class="panel__title">Details</div>
-            <div class="panel__sub" id="detail-meta">Select an item to view details</div>
-          </div>
-          <div class="panel__body">
-            <div id="detail" class="detail__empty">Click an item on the left to see details and take action.</div>
-          </div>
-        </section>
-
         <section class="panel dashboard">
           <div class="panel__head">
-            <div class="panel__title">Performance Summary</div>
+            <div class="panel__title">Inventory &amp; Performance</div>
             <div class="panel__sub" id="dash-meta"></div>
           </div>
           <div class="panel__body">
             <div id="dashboard" class="dash"></div>
           </div>
         </section>
+
+        <section class="panel scripts">
+          <div class="panel__head">
+            <div class="panel__title">Alert Scripts</div>
+            <div class="panel__sub" id="scripts-meta">Loading…</div>
+          </div>
+          <div class="panel__body">
+            <div id="scripts-list" class="list"></div>
+          </div>
+        </section>
       </main>
+    </div>
+
+    <div id="machine-sales-modal" class="modal modal--hidden" role="dialog" aria-modal="true" aria-labelledby="machine-sales-title">
+      <div id="machine-sales-backdrop" class="modal__backdrop"></div>
+      <div class="modal__card">
+        <div class="modal__head">
+          <div>
+            <div id="machine-sales-title" class="modal__title">Machine Day Sales</div>
+            <div id="machine-sales-meta" class="modal__meta"></div>
+          </div>
+          <button id="machine-sales-close" class="btn btn--ghost btn--small" type="button">Close</button>
+        </div>
+        <div id="machine-sales-body" class="modal__body"></div>
+      </div>
+    </div>
+
+    <div id="script-compare-modal" class="modal modal--hidden" role="dialog" aria-modal="true" aria-labelledby="script-compare-title">
+      <div id="script-compare-backdrop" class="modal__backdrop"></div>
+      <div class="modal__card">
+        <div class="modal__head">
+          <div>
+            <div id="script-compare-title" class="modal__title">Script Change Backtest</div>
+            <div id="script-compare-meta" class="modal__meta"></div>
+          </div>
+          <button id="script-compare-close" class="btn btn--ghost btn--small" type="button">Close</button>
+        </div>
+        <div id="script-compare-body" class="modal__body"></div>
+      </div>
+    </div>
+
+    <div id="about-modal" class="modal modal--hidden" role="dialog" aria-modal="true" aria-labelledby="about-title">
+      <div id="about-backdrop" class="modal__backdrop"></div>
+      <div class="modal__card modal__card--deck">
+        <div class="modal__head modal__head--deck">
+          <div>
+            <div id="about-title" class="modal__title">About Vendagent</div>
+            <div class="modal__meta">
+              Product overview deck powered by Slidev
+              ·
+              <a class="modal__link" href="/static/about-deck/index.html" target="_blank" rel="noreferrer">Open in new tab</a>
+            </div>
+          </div>
+          <button id="about-close" class="btn btn--ghost btn--small" type="button">Close</button>
+        </div>
+        <div class="modal__body modal__body--deck">
+          <div class="about-frame-wrap">
+            <iframe
+              id="about-iframe"
+              class="about-frame"
+              src="/static/about-deck/index.html"
+              title="Vendagent Slide Deck"
+              loading="eager"
+            ></iframe>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/static/app.js"></script>
   </body>
 </html>
-

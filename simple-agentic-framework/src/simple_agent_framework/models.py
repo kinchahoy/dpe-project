@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from datetime import date, datetime
 from typing import Optional
 from uuid import uuid4
@@ -8,6 +9,7 @@ from sqlalchemy import Index, UniqueConstraint
 from sqlmodel import Column, DateTime, Field, SQLModel, Text
 
 from .time_utils import utc_now
+from .types import ActionType
 
 
 class ScriptVersion(SQLModel, table=True):
@@ -24,6 +26,32 @@ class ScriptVersion(SQLModel, table=True):
 
     __table_args__ = (
         UniqueConstraint("script_name", "script_version", name="uq_script_version"),
+    )
+
+
+class ScriptSetting(SQLModel, table=True):
+    __tablename__ = "script_settings"
+
+    script_name: str = Field(primary_key=True)
+    enabled: bool = Field(default=True, index=True)
+    active_revision_id: Optional[str] = Field(default=None, index=True)
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False),
+    )
+
+
+class ScriptRevision(SQLModel, table=True):
+    __tablename__ = "script_revisions"
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    script_name: str = Field(index=True)
+    base_sha: str = Field(default="", index=True)
+    instruction: str = Field(default="")
+    code: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
     )
 
 
@@ -77,24 +105,34 @@ class Alert(SQLModel, table=True):
     )
 
 
-class MachineInventory(SQLModel, table=True):
-    __tablename__ = "machine_inventory"
+class AlertSuppression(SQLModel, table=True):
+    __tablename__ = "alert_suppression"
 
-    id: int = Field(default=None, primary_key=True)
-    snapshot_date: date = Field(index=True)
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
+    )
+
+    alert_type: str = Field(index=True)
     location_id: int = Field(index=True)
-    location_name: str = Field(default="")
-    machine_id: int = Field(index=True)
-    machine_name: str = Field(default="")
-    ingredient_id: int
-    ingredient_name: str = Field(default="")
-    quantity_on_hand: float
-    unit: str
+    machine_id: Optional[int] = Field(default=None, index=True)
+
+    suppressed_until: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
+    )
 
     __table_args__ = (
         UniqueConstraint(
-            "snapshot_date", "machine_id", "ingredient_id",
-            name="uq_inventory_snapshot",
+            "alert_type",
+            "location_id",
+            "machine_id",
+            name="uq_alert_suppression_key",
         ),
     )
 
@@ -110,3 +148,51 @@ class EngineState(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=False), nullable=False),
     )
+
+
+class RunLog(SQLModel, table=True):
+    __tablename__ = "run_log"
+
+    run_date: date = Field(primary_key=True)
+    executed_scripts: int = Field(default=0)
+    emitted_alerts: int = Field(default=0)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
+    )
+
+
+class InventoryState(SQLModel, table=True):
+    __tablename__ = "inventory_state"
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    date: dt.date = Field(index=True)
+    machine_id: int = Field(index=True)
+    ingredient_id: int = Field(index=True)
+    quantity_on_hand: float
+    unit: str
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "date", "machine_id", "ingredient_id", name="uq_inventory_state_day_machine"
+        ),
+    )
+
+
+class ManagerAction(SQLModel, table=True):
+    __tablename__ = "manager_action"
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=False), nullable=False, index=True),
+    )
+    effective_date: date = Field(index=True)
+    location_id: int = Field(index=True)
+    machine_id: int = Field(index=True)
+    action_type: str = Field(index=True, default=str(ActionType.RESTOCK_MACHINE))
+    details_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))

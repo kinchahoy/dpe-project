@@ -13,7 +13,7 @@ Locations: Lviv (UA-Cafe-1), San Francisco (SF-Cafe-3)
 | Ingredient        | Avg Daily Usage | Capacity | Unit  | Notes                    |
 |-------------------|-----------------|----------|-------|--------------------------|
 | Espresso Shot     | 8               | 50       | shot  | ~6 days at avg usage     |
-| Milk              | 1,000           | 5,000    | ml    | 5 L container            |
+| Milk              | 1,000           | 10000    | ml    | 5 L container            |
 | Chocolate Powder  | 48              | 250      | g     | standard hopper          |
 
 ## CoffeeVend-X2 (Machines 2, 4)
@@ -23,7 +23,7 @@ Locations: Lviv (UA-Cafe-2), San Francisco (SF-Cafe-4)
 | Ingredient        | Avg Daily Usage | Capacity | Unit  | Notes                    |
 |-------------------|-----------------|----------|-------|--------------------------|
 | Espresso Shot     | 6               | 50       | shot  | ~8 days at avg usage     |
-| Milk              | 540             | 5,000    | ml    | 3 L container            |
+| Milk              | 540             | 10000    | ml    | 3 L container            |
 | Chocolate Powder  | 28              | 250      | g     | standard hopper          |
 | Caramel Syrup     | 19              | 750      | ml    | standard syrup bottle    |
 | Vanilla Syrup     | 20              | 750      | ml    | standard syrup bottle    |

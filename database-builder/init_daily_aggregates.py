@@ -8,7 +8,7 @@ from db import FACTS_DB_FILE, create_observed_db, observed_engine
 
 def rebuild_daily_aggregates() -> None:
     """
-    Rebuild day-level observed tables/views in `artifacts/vending_sales_observed.db`.
+    Rebuild day-level observed tables/views in `../db/vending_sales_observed.db`.
 
     - `daily_product_sales` is a view (recreated by `create_observed_db()`).
     - `daily_ingredient_consumption` is a derived table rebuilt from:

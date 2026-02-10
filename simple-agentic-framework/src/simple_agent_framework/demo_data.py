@@ -6,7 +6,7 @@ from random import Random
 
 from loguru import logger
 
-from .db import fetch_all
+from .db import query_all
 
 
 def inject_synthetic_week(
@@ -25,7 +25,7 @@ def inject_synthetic_week(
 
     end_day = start_day + timedelta(days=6)
 
-    existing = fetch_all(
+    existing = query_all(
         db_path,
         """
         SELECT COUNT(*) AS n FROM "transaction"
@@ -35,7 +35,7 @@ def inject_synthetic_week(
     )
     existing_tx = int(existing[0]["n"]) if existing else 0
 
-    existing_expanded = fetch_all(
+    existing_expanded = query_all(
         db_path,
         """
         SELECT COUNT(*) AS n FROM transaction_expanded
@@ -48,7 +48,7 @@ def inject_synthetic_week(
     if existing_tx > 0 and existing_expanded_n == existing_tx:
         return 0
 
-    products = fetch_all(
+    products = query_all(
         db_path,
         """
         SELECT DISTINCT product_id

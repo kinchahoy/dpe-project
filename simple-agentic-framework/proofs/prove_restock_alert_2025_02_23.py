@@ -17,6 +17,11 @@ from simple_agent_framework.scripts import restock_predictor
 
 ALERT_ID = "9794514b-8e48-4be8-bd0b-9adc7e920dd7"
 DEFAULT_DAY = date(2025, 2, 23)
+SCRIPT_NAME = "restock_predictor"
+SCRIPT_VERSION = "1.0"
+TOP_QTY_THRESHOLD = 180.0
+RESTOCK_MULTIPLIER = 1.25
+ORDER_MULTIPLIER = 1.35
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def setup_logging(log_path: Path) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.remove()
     logger.add(sys.stdout, format="{message}")
     logger.add(
@@ -151,7 +157,7 @@ def build_expected_payload(
             "params": {
                 "machine_id": machine_id,
                 "restock_level_by_ingredient": {
-                    str(top_ingredient_id): round(top_qty * 1.25, 2)
+                    str(top_ingredient_id): round(top_qty * RESTOCK_MULTIPLIER, 2)
                 },
                 "deadline": (run_date + timedelta(days=1)).isoformat(),
             },
@@ -161,7 +167,7 @@ def build_expected_payload(
             "params": {
                 "location_id": location_id,
                 "ingredient_id": top_ingredient_id,
-                "quantity": round(top_qty * 1.35, 2),
+                "quantity": round(top_qty * ORDER_MULTIPLIER, 2),
                 "deadline": (run_date + timedelta(days=2)).isoformat(),
             },
         },
@@ -198,8 +204,8 @@ def main() -> int:
         )
 
         logger.info("Step 2/8: Validate alert identity and default day")
-        assert alert.script_name == "restock_predictor", alert.script_name
-        assert alert.script_version == "1.0", alert.script_version
+        assert alert.script_name == SCRIPT_NAME, alert.script_name
+        assert alert.script_version == SCRIPT_VERSION, alert.script_version
         assert alert.status == "OPEN", alert.status
         assert alert.run_date == expected_day, (
             f"Expected run_date {expected_day}, got {alert.run_date}"
@@ -224,7 +230,7 @@ def main() -> int:
         )
 
         logger.info("Step 4/8: Recompute the script's 3-day ingredient aggregation")
-        totals, by_day = summarize_3d_forecast(ingredient_forecasts, alert.run_date)
+        totals, day_totals = summarize_3d_forecast(ingredient_forecasts, alert.run_date)
         assert totals, "No 3-day ingredient forecast rows found"
         top_ingredient_id, top_qty = totals[0]
         logger.info(
@@ -234,14 +240,16 @@ def main() -> int:
         for ingredient_id, qty in totals[:5]:
             logger.info("  ingredient={} qty_3d={:.6f}", ingredient_id, qty)
         logger.info("3-day per-day totals for top ingredient {}:", top_ingredient_id)
-        for day, ingredient_id, qty in by_day:
+        for day, ingredient_id, qty in day_totals:
             if ingredient_id == top_ingredient_id:
                 logger.info(
                     "  day={} ingredient={} qty={:.6f}", day, ingredient_id, qty
                 )
 
         logger.info("Step 5/8: Apply restock_predictor formulas")
-        assert top_qty >= 180.0, f"Threshold check failed: top_qty={top_qty}"
+        assert top_qty >= TOP_QTY_THRESHOLD, (
+            f"Threshold check failed: top_qty={top_qty}"
+        )
         expected_evidence, expected_actions = build_expected_payload(
             run_date=alert.run_date,
             location_id=alert.location_id,

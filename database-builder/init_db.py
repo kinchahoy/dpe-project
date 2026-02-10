@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from glob import glob
 from pathlib import Path
 from typing import Dict
@@ -34,7 +34,6 @@ from db import (
 from init_daily_aggregates import rebuild_daily_aggregates
 from init_daily_ingredient_projections import rebuild_daily_ingredient_projections
 from init_daily_projections import rebuild_daily_projections
-from init_inventory_snapshots import rebuild_inventory_snapshots
 from init_price_schedule import init_price_schedule, update_expected_prices
 from product_catalog import canonicalize_product_name
 from product_ing import (
@@ -45,6 +44,10 @@ from product_ing import (
 
 # --- PLACEHOLDER DATA (keep all placeholders together) ---
 UAH_TO_USD = 0.027
+
+SERVICE_INTERVAL_DAYS = 110
+DEFAULT_SERVICE_DAYS_REMAINING_AT_SIM_START = 100
+NEAR_DUE_SERVICE_DAYS_REMAINING_AT_SIM_START = 9
 
 PLACEHOLDER_UA_LOCATION = {
     "name": "Lviv, Ukraine",
@@ -254,7 +257,7 @@ def _seed_machine_capacities(session: Session, capacities_md: Path) -> None:
     logger.info("Seeded machine ingredient capacities: {count} rows.", count=len(rows))
 
 
-def _create_sim_run_from_observed(*, seed_days: int = 30) -> str:
+def _create_sim_run_from_observed(*, seed_days: int = 30) -> tuple[str, date, date]:
     create_sim_db()
     with Session(observed_engine) as obs:
         max_date = obs.exec(
@@ -289,7 +292,54 @@ def _create_sim_run_from_observed(*, seed_days: int = 30) -> str:
         start=seed_start,
         end=seed_end,
     )
-    return run_id
+    return run_id, seed_start, seed_end
+
+
+def _align_machine_service_facts_to_seed_window(
+    *,
+    seed_start: date,
+    sf_location_id: int,
+    sf_machine_3_id: int,
+) -> None:
+    """Overwrite placeholder machine facts so they are coherent at sim start.
+
+    Targets:
+    - installed_at <= last_serviced_at <= seed_start_date
+    - last_serviced_at implies "days to go" until next service:
+      - all machines: 100 days remaining (default)
+      - SF machine #3: 9 days remaining (near due)
+    """
+
+    installed_at = datetime.combine((seed_start - timedelta(days=365)), time(9, 0))
+
+    default_days_since_service = (
+        SERVICE_INTERVAL_DAYS - DEFAULT_SERVICE_DAYS_REMAINING_AT_SIM_START
+    )
+    near_due_days_since_service = (
+        SERVICE_INTERVAL_DAYS - NEAR_DUE_SERVICE_DAYS_REMAINING_AT_SIM_START
+    )
+
+    with Session(facts_engine) as facts:
+        machines = facts.exec(select(Machine)).all()
+        for machine in machines:
+            machine.installed_at = installed_at
+            if int(machine.location_id) == int(sf_location_id) and int(
+                machine.id or 0
+            ) == int(sf_machine_3_id):
+                last_serviced_at = datetime.combine(
+                    (seed_start - timedelta(days=near_due_days_since_service)),
+                    time(9, 0),
+                )
+            else:
+                last_serviced_at = datetime.combine(
+                    (seed_start - timedelta(days=default_days_since_service)),
+                    time(9, 0),
+                )
+
+            machine.last_serviced_at = last_serviced_at
+            machine.current_hours = 0
+            facts.add(machine)
+        facts.commit()
 
 
 def load_csvs() -> None:
@@ -433,11 +483,16 @@ def load_csvs() -> None:
             )
 
     rebuild_daily_aggregates()
-    run_id = _create_sim_run_from_observed(seed_days=30)
+    run_id, seed_start, _seed_end = _create_sim_run_from_observed(seed_days=30)
+
+    _align_machine_service_facts_to_seed_window(
+        seed_start=seed_start,
+        sf_location_id=sf_location_id,
+        sf_machine_3_id=sf_machine_3_id,
+    )
 
     init_price_schedule(run_id=run_id)
     update_expected_prices(run_id=run_id)
-    rebuild_inventory_snapshots(run_id=run_id)
     rebuild_daily_projections(run_id=run_id)
     rebuild_daily_ingredient_projections(run_id=run_id)
 

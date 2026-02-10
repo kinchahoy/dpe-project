@@ -38,12 +38,43 @@ class DashboardRequest(BaseModel):
     location_id: int | None = None
 
 
+class ScriptEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class ScriptEditRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
+class ScriptActivateRequest(BaseModel):
+    revision_id: str = Field(min_length=1)
+
+
+class ScriptCompareRequest(BaseModel):
+    revision_id: str = Field(min_length=1)
+
+
+class ScriptFinalCheckRequest(BaseModel):
+    revision_id: str = Field(min_length=1)
+    comparison: dict[str, Any] | None = None
+
+
+class RestockMachineRequest(BaseModel):
+    machine_id: int
+
+
 def create_app(
-    data_db: str | Path = "coffee.db",
+    db_dir: str | Path | None = None,
     state_db: str | Path = "agent.db",
+    startover_on_launch: bool = True,
 ) -> FastAPI:
     app = FastAPI(title="Daily Alert Engine")
-    engine = DailyAlertEngine(data_db=data_db, state_db=state_db)
+    engine = DailyAlertEngine(
+        db_dir=db_dir,
+        state_db=state_db,
+    )
+    if startover_on_launch:
+        engine.reset_state()
 
     static_dir = Path(__file__).parent / "web" / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -120,16 +151,91 @@ def create_app(
     def inventory() -> dict[str, Any]:
         return engine.get_inventory()
 
-    @app.post("/api/inventory/sync")
-    def sync_inventory() -> dict[str, Any]:
-        st = engine.get_state()
-        current_day = date.fromisoformat(st["current_day"])
-        n = engine.sync_inventory(current_day)
-        return {"synced": n, "date": st["current_day"]}
+    @app.get("/api/machine-sales")
+    def machine_sales(machine_id: int) -> dict[str, Any]:
+        try:
+            return engine.machine_sales_by_group(machine_id=machine_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/backtest")
     def backtest(req: BacktestRequest) -> list[dict[str, Any]]:
         return engine.run_backtest(start_day=req.start_day, end_day=req.end_day)
+
+    @app.post("/api/restock-machine")
+    def restock_machine(req: RestockMachineRequest) -> dict[str, Any]:
+        return engine.schedule_machine_restock(machine_id=req.machine_id)
+
+    @app.get("/api/scripts")
+    def list_scripts() -> list[dict[str, Any]]:
+        return engine.list_scripts()
+
+    @app.get("/api/scripts/{script_name}")
+    def get_script(script_name: str) -> dict[str, Any]:
+        try:
+            return engine.get_script(script_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/enabled")
+    def set_script_enabled(
+        script_name: str, req: ScriptEnabledRequest
+    ) -> dict[str, Any]:
+        try:
+            return engine.set_script_enabled(script_name, req.enabled)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/generate-edit")
+    def generate_script_edit(
+        script_name: str, req: ScriptEditRequest
+    ) -> dict[str, Any]:
+        try:
+            return engine.generate_script_edit(script_name, req.instruction)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/compare-draft")
+    def compare_script_draft(
+        script_name: str, req: ScriptCompareRequest
+    ) -> dict[str, Any]:
+        try:
+            return engine.compare_script_revision_history(script_name, req.revision_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/final-check")
+    def final_check_script_draft(
+        script_name: str, req: ScriptFinalCheckRequest
+    ) -> dict[str, Any]:
+        try:
+            return engine.final_check_script_revision(
+                script_name, req.revision_id, req.comparison
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/activate")
+    def activate_script_revision(
+        script_name: str, req: ScriptActivateRequest
+    ) -> dict[str, Any]:
+        try:
+            return engine.activate_script_revision(script_name, req.revision_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/scripts/{script_name}/revert")
+    def revert_script(script_name: str) -> dict[str, Any]:
+        try:
+            return engine.revert_script_to_baseline(script_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return app
 

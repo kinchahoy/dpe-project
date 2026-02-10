@@ -28,7 +28,9 @@ type Dashboard = {
   start_day: string;
   end_day: string;
   daily_revenue: Array<{ location_id: number; date: string; revenue: number; tx_count: number }>;
+  machine_revenue: Array<{ location_id: number; machine_id: number; revenue: number; tx_count: number }>;
   top_alert_patterns: Array<{ location_id: number; severity: string; alert_type: string; n: number }>;
+  location_currency?: Record<number, string>;
 };
 
 type InventoryIngredient = {
@@ -36,6 +38,10 @@ type InventoryIngredient = {
   name: string;
   quantity: number;
   unit: string;
+  capacity?: number | null;
+  capacity_unit?: string | null;
+  start_quantity?: number | null;
+  end_quantity?: number | null;
 };
 
 type InventoryMachine = {
@@ -47,6 +53,7 @@ type InventoryMachine = {
 type InventoryLocation = {
   location_id: number;
   location_name: string;
+  currency: string;
   machines: InventoryMachine[];
 };
 
@@ -55,25 +62,230 @@ type InventoryResponse = {
   locations: InventoryLocation[];
 };
 
+type AIReviewResponse = {
+  feedback_loop_id: string;
+  reviewed_at: string;
+  assessment: string;
+  new_alert_action: {
+    action_type: string;
+    reason: string;
+    params: Record<string, unknown>;
+  };
+  optional_script_change: {
+    script_name: string;
+    change_hint: string;
+    edit_instruction?: string;
+  } | null;
+};
+
+type ScriptListRow = {
+  script_name: string;
+  enabled: boolean;
+  active_source: "baseline" | "override" | string;
+  active_revision_id: string | null;
+  baseline_sha: string;
+  active_sha: string;
+};
+
+type ScriptDetail = {
+  script_name: string;
+  enabled: boolean;
+  active_source: "baseline" | "override" | string;
+  active_revision_id: string | null;
+  baseline_code: string;
+  active_code: string;
+  baseline_sha: string;
+  active_sha: string;
+};
+
+type ScriptDraft = {
+  revision_id: string;
+  script_name: string;
+  base_sha: string;
+  code: string;
+};
+
+type ScriptDraftCompareResponse = {
+  script_name: string;
+  revision_id: string;
+  comparison: ScriptDraftComparison;
+};
+
+type ScriptDraftFinalCheckResponse = {
+  script_name: string;
+  revision_id: string;
+  reviewed_at: string;
+  recommended_action: "accept_draft" | "try_again";
+  rationale: string;
+  retry_instruction: string | null;
+};
+
+type ScriptDraftComparisonDay = {
+  date: string;
+  old_alerts: number;
+  new_alerts: number;
+};
+
+type ScriptDraftComparison = {
+  start_day: string;
+  end_day: string;
+  total_days: number;
+  old_script_version: string;
+  new_script_version: string;
+  old_days_triggered: number;
+  new_days_triggered: number;
+  old_total_alerts: number;
+  new_total_alerts: number;
+  changed_days: ScriptDraftComparisonDay[];
+};
+
+type ScriptCompareModalState = {
+  scriptName: string;
+  instruction: string;
+  revisionId: string | null;
+  phase: "generating" | "comparing" | "final_checking" | "done";
+  loading: boolean;
+  error: string | null;
+  oldCode: string | null;
+  newCode: string | null;
+  comparison: ScriptDraftComparison | null;
+  finalCheckLoading: boolean;
+  finalCheckError: string | null;
+  finalCheck: ScriptDraftFinalCheckResponse | null;
+};
+
+type MachineSalesGroup = {
+  product_group: string;
+  tx_count: number;
+  revenue: number;
+  avg_price: number | null;
+  avg_expected_price: number | null;
+};
+
+type MachineSalesResponse = {
+  date: string;
+  machine_id: number;
+  machine_name: string;
+  location_id: number;
+  location_name: string;
+  currency: string;
+  totals: {
+    tx_count: number;
+    revenue: number;
+  };
+  groups: MachineSalesGroup[];
+};
+
+type MachineSalesModalState = {
+  machineId: number;
+  machineName: string;
+  locationId: number;
+  locationName: string;
+  loading: boolean;
+  error: string | null;
+  data: MachineSalesResponse | null;
+};
+
 const el = {
   statePill: document.getElementById("state-pill") as HTMLDivElement,
   alertsMeta: document.getElementById("alerts-meta") as HTMLDivElement,
   alertsList: document.getElementById("alerts-list") as HTMLDivElement,
-  detailMeta: document.getElementById("detail-meta") as HTMLDivElement,
-  detail: document.getElementById("detail") as HTMLDivElement,
   dashMeta: document.getElementById("dash-meta") as HTMLDivElement,
   dashboard: document.getElementById("dashboard") as HTMLDivElement,
+  scriptsMeta: document.getElementById("scripts-meta") as HTMLDivElement,
+  scriptsList: document.getElementById("scripts-list") as HTMLDivElement,
+  machineSalesModal: document.getElementById("machine-sales-modal") as HTMLDivElement,
+  machineSalesBackdrop: document.getElementById("machine-sales-backdrop") as HTMLDivElement,
+  machineSalesClose: document.getElementById("machine-sales-close") as HTMLButtonElement,
+  machineSalesTitle: document.getElementById("machine-sales-title") as HTMLDivElement,
+  machineSalesMeta: document.getElementById("machine-sales-meta") as HTMLDivElement,
+  machineSalesBody: document.getElementById("machine-sales-body") as HTMLDivElement,
+  scriptCompareModal: document.getElementById("script-compare-modal") as HTMLDivElement,
+  scriptCompareBackdrop: document.getElementById("script-compare-backdrop") as HTMLDivElement,
+  scriptCompareClose: document.getElementById("script-compare-close") as HTMLButtonElement,
+  scriptCompareTitle: document.getElementById("script-compare-title") as HTMLDivElement,
+  scriptCompareMeta: document.getElementById("script-compare-meta") as HTMLDivElement,
+  scriptCompareBody: document.getElementById("script-compare-body") as HTMLDivElement,
+  aboutModal: document.getElementById("about-modal") as HTMLDivElement,
+  aboutBackdrop: document.getElementById("about-backdrop") as HTMLDivElement,
+  aboutClose: document.getElementById("about-close") as HTMLButtonElement,
+  aboutBtn: document.getElementById("about-btn") as HTMLButtonElement,
   skipDate: document.getElementById("skip-date") as HTMLInputElement,
   resetBtn: document.getElementById("reset-btn") as HTMLButtonElement,
   runBtn: document.getElementById("run-btn") as HTMLButtonElement,
   nextBtn: document.getElementById("next-btn") as HTMLButtonElement,
   skipBtn: document.getElementById("skip-btn") as HTMLButtonElement,
   refreshBtn: document.getElementById("refresh-btn") as HTMLButtonElement,
+  roleSelect: document.getElementById("role-select") as HTMLSelectElement,
+};
+
+const LOCATION_NAMES: Record<number, string> = {
+  1: "Lviv, Ukraine",
+  2: "San Francisco, CA",
+};
+
+const locationCurrencyMap = new Map<number, string>();
+
+const CURRENCY_LOCALES: Record<string, string> = {
+  USD: "en-US",
+  UAH: "uk-UA",
+};
+
+const currencyFormatterCache = new Map<string, Intl.NumberFormat>();
+
+function currencyForLocation(locationId: number): string {
+  return locationCurrencyMap.get(locationId) ?? "USD";
+}
+
+function updateLocationCurrencyFromDashboard(dash: Dashboard | null): void {
+  if (!dash?.location_currency) return;
+  Object.entries(dash.location_currency).forEach(([key, value]) => {
+    if (!value) return;
+    const numericKey = Number(key);
+    if (Number.isNaN(numericKey)) return;
+    locationCurrencyMap.set(numericKey, value);
+  });
+}
+
+function updateLocationCurrencyFromInventory(inv: InventoryResponse | null): void {
+  if (!inv) return;
+  for (const loc of inv.locations) {
+    if (loc.currency) {
+      locationCurrencyMap.set(loc.location_id, loc.currency);
+    }
+  }
+}
+
+type RoleId = "overall_manager" | "europe_manager" | "us_manager";
+
+const ROLE_SCOPE: Record<RoleId, { label: string; locationIds: number[] | null }> = {
+  overall_manager: { label: "Overall manager", locationIds: null },
+  europe_manager: { label: "Europe manager", locationIds: [1] },
+  us_manager: { label: "US manager", locationIds: [2] },
 };
 
 let state: EngineState | null = null;
+let rawAlerts: AlertRow[] = [];
 let alerts: AlertRow[] = [];
 let selectedAlertId: string | null = null;
+let rawDashboard: Dashboard | null = null;
+let rawInventory: InventoryResponse | null = null;
+let activeRole: RoleId = "overall_manager";
+let rawScripts: ScriptListRow[] = [];
+let selectedScriptName: string | null = null;
+
+const aiReviewByAlertId = new Map<string, AIReviewResponse>();
+const aiReviewBusyByAlertId = new Set<string>();
+const aiReviewErrorByAlertId = new Map<string, string>();
+
+const scriptDetailByName = new Map<string, ScriptDetail>();
+const scriptDraftByName = new Map<string, ScriptDraft>();
+const scriptInstructionByName = new Map<string, string>();
+const scriptBusyByName = new Map<string, string>();
+const scriptErrorByName = new Map<string, string>();
+let machineSalesModalState: MachineSalesModalState | null = null;
+let scriptCompareModalState: ScriptCompareModalState | null = null;
+let aboutModalOpen = false;
 
 /* ── Formatting helpers ─────────────────────────────────── */
 
@@ -81,7 +293,7 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   service_due: "Service Due",
   machine_dropoff: "Sales Drop-Off",
   pricing_anomaly: "Pricing Issue",
-  slow_mover_cleanup: "Slow-Moving Product",
+  systematic_demand_change: "Demand Above Forecast",
   low_stock: "Low Stock",
   refill_needed: "Refill Needed",
   ingredient_low: "Ingredient Running Low",
@@ -163,11 +375,11 @@ function formatEvidenceKey(raw: string): string {
   return EVIDENCE_KEY_LABELS[raw] ?? raw.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatEvidenceValue(key: string, value: unknown): string {
+function formatEvidenceValue(key: string, value: unknown, currency?: string): string {
   if (value === null || value === undefined) return "\u2014";
   if (typeof value === "number") {
     if (key.includes("revenue") || key.includes("price") || key === "amount" || key === "current_revenue" || key === "previous_revenue" || key === "avg_daily_revenue" || key === "total_revenue") {
-      return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      return formatCurrency(value, currency);
     }
     if (key.includes("pct") || key.includes("percent")) {
       return `${value.toFixed(1)}%`;
@@ -181,7 +393,17 @@ function formatEvidenceValue(key: string, value: unknown): string {
 }
 
 function formatLocation(locationId: number): string {
-  return `Location ${locationId}`;
+  return LOCATION_NAMES[locationId] ?? `Location ${locationId}`;
+}
+
+function roleAllowedLocations(): Set<number> | null {
+  const locations = ROLE_SCOPE[activeRole].locationIds;
+  return locations ? new Set(locations) : null;
+}
+
+function isVisibleLocation(locationId: number): boolean {
+  const allowed = roleAllowedLocations();
+  return allowed ? allowed.has(locationId) : true;
 }
 
 function formatMachine(a: AlertRow): string {
@@ -194,8 +416,36 @@ function formatActionType(raw: string): string {
   return ACTION_TYPE_LABELS[raw] ?? raw.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatCurrency(amount: number): string {
-  return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function formatCurrency(amount: number, currency?: string): string {
+  const code = currency ?? "USD";
+  let formatter = currencyFormatterCache.get(code);
+  if (!formatter) {
+    const locale = CURRENCY_LOCALES[code] ?? "en-US";
+    formatter = new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    currencyFormatterCache.set(code, formatter);
+  }
+  return formatter.format(amount);
+}
+
+function filterDashboardForRole(dash: Dashboard): Dashboard {
+  return {
+    ...dash,
+    daily_revenue: dash.daily_revenue.filter((x) => isVisibleLocation(x.location_id)),
+    machine_revenue: dash.machine_revenue.filter((x) => isVisibleLocation(x.location_id)),
+    top_alert_patterns: dash.top_alert_patterns.filter((x) => isVisibleLocation(x.location_id)),
+  };
+}
+
+function filterInventoryForRole(inv: InventoryResponse): InventoryResponse {
+  return {
+    ...inv,
+    locations: inv.locations.filter((loc) => isVisibleLocation(loc.location_id)),
+  };
 }
 
 /* ── Core helpers ────────────────────────────────────────── */
@@ -220,6 +470,428 @@ function setBusy(busy: boolean): void {
 
 function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function jsonInline(data: unknown): string {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
+function createSpinnerLabel(text: string): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "llm-status llm-status--pending";
+
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+
+  const label = document.createElement("span");
+  label.textContent = text;
+
+  wrap.appendChild(spinner);
+  wrap.appendChild(label);
+  return wrap;
+}
+
+function upsertScriptInstruction(scriptName: string, instruction: string): void {
+  if (!instruction.trim()) return;
+  scriptInstructionByName.set(scriptName, instruction.trim());
+}
+
+function scrollToScriptsPanel(): void {
+  el.scriptsList.closest(".panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function quickEditPrompts(scriptName: string): string[] {
+  return [
+    `Raise the trigger threshold in ${scriptName} by about 20% to reduce noisy alerts while keeping severe cases.`,
+    `Change ${scriptName} from per-product alerting to product-group alerting using stable group labels in context.`,
+    `Require at least 3 repeated events across recent days before emitting an alert in ${scriptName}.`,
+  ];
+}
+
+function closeMachineSalesModal(): void {
+  machineSalesModalState = null;
+  renderMachineSalesModal();
+}
+
+function renderMachineSalesModal(): void {
+  const state = machineSalesModalState;
+  if (!state) {
+    el.machineSalesModal.classList.add("modal--hidden");
+    el.machineSalesBody.innerHTML = "";
+    el.machineSalesMeta.textContent = "";
+    return;
+  }
+
+  el.machineSalesModal.classList.remove("modal--hidden");
+  el.machineSalesTitle.textContent = `${state.machineName} Day Sales`;
+  el.machineSalesMeta.textContent = `${state.locationName} · ${state.loading ? "Loading..." : ""}`;
+  el.machineSalesBody.innerHTML = "";
+
+  if (state.loading) {
+    el.machineSalesBody.appendChild(createSpinnerLabel("Loading today's grouped sales..."));
+    return;
+  }
+
+  if (state.error) {
+    const err = document.createElement("div");
+    err.className = "llm-status llm-status--error";
+    err.textContent = state.error;
+    el.machineSalesBody.appendChild(err);
+    return;
+  }
+
+  if (!state.data) {
+    const empty = document.createElement("div");
+    empty.className = "detail__empty";
+    empty.textContent = "No day sales available.";
+    el.machineSalesBody.appendChild(empty);
+    return;
+  }
+
+  const data = state.data;
+  const meta = document.createElement("div");
+  meta.className = "modal__summary";
+  meta.textContent =
+    `${formatDate(data.date)} · ${data.totals.tx_count.toLocaleString("en-US")} sales · ${formatCurrency(data.totals.revenue, data.currency)}`;
+  el.machineSalesBody.appendChild(meta);
+
+  if (data.groups.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "detail__empty";
+    empty.textContent = "No transactions for this machine on the current simulation day.";
+    el.machineSalesBody.appendChild(empty);
+    return;
+  }
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "modal-table-wrap";
+  const table = document.createElement("table");
+  table.className = "modal-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Product Group</th>
+        <th>Sales</th>
+        <th>Revenue</th>
+        <th>Avg Price</th>
+        <th>Avg Expected</th>
+      </tr>
+    </thead>
+  `;
+  const body = document.createElement("tbody");
+  for (const row of data.groups) {
+    const tr = document.createElement("tr");
+    const avgPrice =
+      row.avg_price != null ? formatCurrency(row.avg_price, data.currency) : "—";
+    const avgExpected =
+      row.avg_expected_price != null
+        ? formatCurrency(row.avg_expected_price, data.currency)
+        : "—";
+    tr.innerHTML = `
+      <td>${escapeHtml(formatIngredientName(row.product_group))}</td>
+      <td>${row.tx_count.toLocaleString("en-US")}</td>
+      <td>${escapeHtml(formatCurrency(row.revenue, data.currency))}</td>
+      <td>${escapeHtml(avgPrice)}</td>
+      <td>${escapeHtml(avgExpected)}</td>
+    `;
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  tableWrap.appendChild(table);
+  el.machineSalesBody.appendChild(tableWrap);
+}
+
+async function openMachineSalesModal(
+  machineId: number,
+  machineName: string,
+  locationId: number,
+  locationName: string
+): Promise<void> {
+  machineSalesModalState = {
+    machineId,
+    machineName,
+    locationId,
+    locationName,
+    loading: true,
+    error: null,
+    data: null,
+  };
+  renderMachineSalesModal();
+
+  try {
+    const data = await api<MachineSalesResponse>(`/api/machine-sales?machine_id=${machineId}`);
+    if (!machineSalesModalState || machineSalesModalState.machineId !== machineId) return;
+    machineSalesModalState = {
+      ...machineSalesModalState,
+      loading: false,
+      data,
+      error: null,
+    };
+  } catch (err) {
+    if (!machineSalesModalState || machineSalesModalState.machineId !== machineId) return;
+    machineSalesModalState = {
+      ...machineSalesModalState,
+      loading: false,
+      data: null,
+      error: `Failed to load machine sales: ${String(err)}`,
+    };
+  }
+  renderMachineSalesModal();
+}
+
+function closeScriptCompareModal(): void {
+  scriptCompareModalState = null;
+  renderScriptCompareModal();
+}
+
+function openAboutModal(): void {
+  aboutModalOpen = true;
+  renderAboutModal();
+}
+
+function closeAboutModal(): void {
+  aboutModalOpen = false;
+  renderAboutModal();
+}
+
+function renderAboutModal(): void {
+  if (aboutModalOpen) {
+    el.aboutModal.classList.remove("modal--hidden");
+    return;
+  }
+  el.aboutModal.classList.add("modal--hidden");
+}
+
+function renderScriptCompareModal(): void {
+  const state = scriptCompareModalState;
+  if (!state) {
+    el.scriptCompareModal.classList.add("modal--hidden");
+    el.scriptCompareMeta.textContent = "";
+    el.scriptCompareBody.innerHTML = "";
+    return;
+  }
+
+  el.scriptCompareModal.classList.remove("modal--hidden");
+  el.scriptCompareTitle.textContent = `${state.scriptName} Backtest`;
+  if (state.phase === "generating") {
+    el.scriptCompareMeta.textContent = "Step 1/4: generating draft script with AI...";
+  } else if (state.phase === "comparing") {
+    el.scriptCompareMeta.textContent =
+      "Step 2/4: running historical trigger comparison (old vs new)...";
+  } else if (state.phase === "final_checking") {
+    el.scriptCompareMeta.textContent = "Step 3/4: asking AI for final recommendation...";
+  } else {
+    el.scriptCompareMeta.textContent = "Step 4/4: recommendation ready.";
+  }
+  el.scriptCompareBody.innerHTML = "";
+
+  const codeGrid = document.createElement("div");
+  codeGrid.className = "script-compare-code-grid";
+
+  const oldWrap = document.createElement("div");
+  const oldHeader = document.createElement("div");
+  oldHeader.className = "section-header";
+  oldHeader.textContent = "Old Script";
+  oldWrap.appendChild(oldHeader);
+  if (state.oldCode) {
+    const oldCode = document.createElement("pre");
+    oldCode.className = "code script-compare-code";
+    oldCode.textContent = state.oldCode;
+    oldWrap.appendChild(oldCode);
+  } else if (state.phase !== "done") {
+    oldWrap.appendChild(createSpinnerLabel("Loading current active script..."));
+  } else {
+    const oldMissing = document.createElement("div");
+    oldMissing.className = "detail__empty";
+    oldMissing.textContent = "Current active script unavailable.";
+    oldWrap.appendChild(oldMissing);
+  }
+  codeGrid.appendChild(oldWrap);
+
+  const newWrap = document.createElement("div");
+  const newHeader = document.createElement("div");
+  newHeader.className = "section-header";
+  newHeader.textContent = "New Draft";
+  newWrap.appendChild(newHeader);
+  if (state.newCode) {
+    const newCode = document.createElement("pre");
+    newCode.className = "code script-compare-code";
+    newCode.textContent = state.newCode;
+    newWrap.appendChild(newCode);
+  } else if (state.phase === "generating") {
+    newWrap.appendChild(createSpinnerLabel("Generating new draft script..."));
+  } else {
+    const newMissing = document.createElement("div");
+    newMissing.className = "detail__empty";
+    newMissing.textContent = "No draft code generated.";
+    newWrap.appendChild(newMissing);
+  }
+  codeGrid.appendChild(newWrap);
+
+  el.scriptCompareBody.appendChild(codeGrid);
+
+  if (state.error) {
+    const err = document.createElement("div");
+    err.className = "llm-status llm-status--error";
+    err.textContent = state.error;
+    el.scriptCompareBody.appendChild(err);
+    return;
+  }
+
+  if (state.loading) {
+    const statusText =
+      state.phase === "generating"
+        ? "Generating draft script..."
+        : state.phase === "comparing"
+          ? "Comparing old and new script triggers across historical days..."
+          : "Processing...";
+    el.scriptCompareBody.appendChild(createSpinnerLabel(statusText));
+    return;
+  }
+
+  if (!state.comparison) {
+    const empty = document.createElement("div");
+    empty.className = "detail__empty";
+    empty.textContent = "No comparison output available.";
+    el.scriptCompareBody.appendChild(empty);
+    return;
+  }
+
+  const c = state.comparison;
+  const summary = document.createElement("div");
+  summary.className = "modal__summary";
+  summary.textContent = `${formatDate(c.start_day)} - ${formatDate(c.end_day)} (${c.total_days} days)`;
+  el.scriptCompareBody.appendChild(summary);
+
+  const metrics = document.createElement("div");
+  metrics.className = "grid2";
+  metrics.innerHTML = `
+    <div class="kv"><div class="kv__k">Old Script Triggered Days</div><div class="kv__v">${c.old_days_triggered}</div></div>
+    <div class="kv"><div class="kv__k">New Script Triggered Days</div><div class="kv__v">${c.new_days_triggered}</div></div>
+    <div class="kv"><div class="kv__k">Old Total Alerts</div><div class="kv__v">${c.old_total_alerts}</div></div>
+    <div class="kv"><div class="kv__k">New Total Alerts</div><div class="kv__v">${c.new_total_alerts}</div></div>
+  `;
+  el.scriptCompareBody.appendChild(metrics);
+
+  const changed = c.changed_days ?? [];
+  if (changed.length === 0) {
+    const noChanges = document.createElement("div");
+    noChanges.className = "detail__empty";
+    noChanges.textContent = "No day-level trigger count differences between old and new script.";
+    el.scriptCompareBody.appendChild(noChanges);
+  } else {
+    const changedHeader = document.createElement("div");
+    changedHeader.className = "section-header";
+    changedHeader.textContent = `Days With Different Trigger Counts (${changed.length})`;
+    el.scriptCompareBody.appendChild(changedHeader);
+
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "modal-table-wrap";
+    const table = document.createElement("table");
+    table.className = "modal-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Old Alerts</th>
+          <th>New Alerts</th>
+        </tr>
+      </thead>
+    `;
+    const body = document.createElement("tbody");
+    for (const row of changed.slice(0, 60)) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(formatDate(row.date))}</td>
+        <td>${row.old_alerts}</td>
+        <td>${row.new_alerts}</td>
+      `;
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    tableWrap.appendChild(table);
+    el.scriptCompareBody.appendChild(tableWrap);
+  }
+
+  const finalHeader = document.createElement("div");
+  finalHeader.className = "section-header";
+  finalHeader.textContent = "Final AI Check";
+  el.scriptCompareBody.appendChild(finalHeader);
+
+  if (state.finalCheckLoading || state.phase === "final_checking") {
+    el.scriptCompareBody.appendChild(
+      createSpinnerLabel("Asking AI whether to accept draft or try again...")
+    );
+    return;
+  }
+
+  if (state.finalCheckError) {
+    const finalErr = document.createElement("div");
+    finalErr.className = "llm-status llm-status--error";
+    finalErr.textContent = state.finalCheckError;
+    el.scriptCompareBody.appendChild(finalErr);
+  }
+
+  if (state.finalCheck) {
+    const assessment = document.createElement("div");
+    assessment.className = "ai-review__assessment";
+    const recommendation =
+      state.finalCheck.recommended_action === "accept_draft"
+        ? "Accept Draft"
+        : "Try Again";
+    assessment.innerHTML = `
+      <strong>Recommendation:</strong> ${escapeHtml(recommendation)}<br/>
+      ${escapeHtml(state.finalCheck.rationale)}
+    `;
+    el.scriptCompareBody.appendChild(assessment);
+
+    if (state.finalCheck.retry_instruction) {
+      const retryTip = document.createElement("div");
+      retryTip.className = "script-editor__hint";
+      retryTip.textContent = `Suggested retry instruction: ${state.finalCheck.retry_instruction}`;
+      el.scriptCompareBody.appendChild(retryTip);
+    }
+  } else {
+    const missing = document.createElement("div");
+    missing.className = "detail__empty";
+    missing.textContent = "Final AI recommendation not available.";
+    el.scriptCompareBody.appendChild(missing);
+  }
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "script-editor__row";
+
+  const isActivating = scriptBusyByName.get(state.scriptName) === "activate";
+  const accept = document.createElement("button");
+  accept.className = "btn btn--primary";
+  accept.textContent = isActivating ? "Accepting..." : "Accept Draft";
+  accept.disabled = isActivating || !scriptDraftByName.has(state.scriptName);
+  accept.onclick = async () => {
+    const ok = await activateScriptDraft(state.scriptName);
+    if (ok) closeScriptCompareModal();
+  };
+  actionRow.appendChild(accept);
+
+  const tryAgain = document.createElement("button");
+  tryAgain.className = "btn btn--ghost";
+  tryAgain.textContent = "Try Again";
+  tryAgain.onclick = () => {
+    const suggestion = state.finalCheck?.retry_instruction?.trim();
+    if (suggestion) {
+      scriptInstructionByName.set(state.scriptName, suggestion);
+    }
+    selectedScriptName = state.scriptName;
+    closeScriptCompareModal();
+    renderScripts();
+    scrollToScriptsPanel();
+  };
+  actionRow.appendChild(tryAgain);
+  el.scriptCompareBody.appendChild(actionRow);
 }
 
 /* ── Render functions ────────────────────────────────────── */
@@ -247,13 +919,13 @@ function renderAlerts(): void {
   }
 
   for (const a of alerts) {
+    const isActive = a.alert_id === selectedAlertId;
     const card = document.createElement("div");
-    card.className = `card${a.alert_id === selectedAlertId ? " card--active" : ""}`;
+    card.className = `card${isActive ? " card--active" : ""}`;
     card.tabIndex = 0;
     card.onclick = () => {
-      selectedAlertId = a.alert_id;
+      selectedAlertId = selectedAlertId === a.alert_id ? null : a.alert_id;
       renderAlerts();
-      renderDetail();
     };
 
     const top = document.createElement("div");
@@ -281,31 +953,24 @@ function renderAlerts(): void {
     card.appendChild(top);
     card.appendChild(title);
     card.appendChild(meta);
+
+    if (isActive) {
+      card.appendChild(buildAlertExpanded(a));
+    }
+
     el.alertsList.appendChild(card);
   }
 }
 
-function renderDetail(): void {
-  const a = alerts.find((x) => x.alert_id === selectedAlertId) ?? null;
-  if (!a) {
-    el.detailMeta.textContent = "Select an item to view details";
-    el.detail.innerHTML = `<div class="detail__empty">Click an item on the left to see details and take action.</div>`;
-    return;
-  }
-
-  el.detailMeta.textContent = `${formatMachine(a)} \u00b7 ${formatSeverity(a.severity)} priority`;
-
+function buildAlertExpanded(a: AlertRow): HTMLDivElement {
   const container = document.createElement("div");
+  container.className = "card__expanded";
 
-  const title = document.createElement("div");
-  title.className = "detail__title";
-  title.textContent = a.title;
+  const alertCurrency = currencyForLocation(a.location_id);
 
   const summary = document.createElement("div");
   summary.className = "detail__summary";
   summary.textContent = a.summary;
-
-  container.appendChild(title);
   container.appendChild(summary);
 
   // Evidence section - rendered as human-readable cards
@@ -328,7 +993,7 @@ function renderDetail(): void {
       k.textContent = formatEvidenceKey(key);
       const v = document.createElement("div");
       v.className = "kv__v";
-      v.textContent = formatEvidenceValue(key, value);
+      v.textContent = formatEvidenceValue(key, value, alertCurrency);
       wrap.appendChild(k);
       wrap.appendChild(v);
       grid.appendChild(wrap);
@@ -360,13 +1025,83 @@ function renderDetail(): void {
         const details = document.createElement("div");
         details.className = "suggestion__details";
         details.textContent = paramEntries
-          .map(([k, v]) => `${formatEvidenceKey(k)}: ${formatEvidenceValue(k, v)}`)
+          .map(([k, v]) => `${formatEvidenceKey(k)}: ${formatEvidenceValue(k, v, alertCurrency)}`)
           .join(" \u00b7 ");
         item.appendChild(details);
       }
       actionsList.appendChild(item);
     }
     container.appendChild(actionsList);
+  }
+
+  const aiReview = aiReviewByAlertId.get(a.alert_id) ?? null;
+  const aiReviewBusy = aiReviewBusyByAlertId.has(a.alert_id);
+  const aiReviewError = aiReviewErrorByAlertId.get(a.alert_id) ?? null;
+
+  if (aiReviewBusy || aiReview || aiReviewError) {
+    const aiHeader = document.createElement("div");
+    aiHeader.className = "section-header";
+    aiHeader.textContent = "AI Operations Assistant";
+    container.appendChild(aiHeader);
+
+    const aiWrap = document.createElement("div");
+    aiWrap.className = "ai-review";
+
+    if (aiReviewBusy) {
+      aiWrap.appendChild(createSpinnerLabel("AI review queued and running..."));
+    }
+
+    if (aiReviewError) {
+      const err = document.createElement("div");
+      err.className = "llm-status llm-status--error";
+      err.textContent = `AI review failed: ${aiReviewError}`;
+      aiWrap.appendChild(err);
+    }
+
+    if (aiReview) {
+      const assessment = document.createElement("div");
+      assessment.className = "ai-review__assessment";
+      assessment.textContent = aiReview.assessment;
+      aiWrap.appendChild(assessment);
+
+      const action = document.createElement("div");
+      action.className = "suggestion";
+      action.innerHTML = `
+        <div class="suggestion__action">${escapeHtml(formatActionType(aiReview.new_alert_action.action_type))}</div>
+        <div class="suggestion__details">${escapeHtml(aiReview.new_alert_action.reason)}</div>
+        <div class="suggestion__details">Params: ${escapeHtml(jsonInline(aiReview.new_alert_action.params))}</div>
+      `;
+      aiWrap.appendChild(action);
+
+      if (aiReview.optional_script_change) {
+        const change = aiReview.optional_script_change;
+        const hint = document.createElement("div");
+        hint.className = "suggestion";
+        hint.innerHTML = `
+          <div class="suggestion__action">Suggested script update: ${escapeHtml(change.script_name)}</div>
+          <div class="suggestion__details">${escapeHtml(change.change_hint)}</div>
+          <div class="suggestion__details">${escapeHtml(change.edit_instruction ?? change.change_hint)}</div>
+        `;
+
+        const useHint = document.createElement("button");
+        useHint.className = "btn btn--ghost btn--small";
+        useHint.textContent = "Use For Script Draft";
+        useHint.onclick = (event) => {
+          event.stopPropagation();
+          selectedScriptName = change.script_name;
+          upsertScriptInstruction(
+            change.script_name,
+            change.edit_instruction ?? change.change_hint
+          );
+          renderScripts();
+          scrollToScriptsPanel();
+        };
+        hint.appendChild(useHint);
+        aiWrap.appendChild(hint);
+      }
+    }
+
+    container.appendChild(aiWrap);
   }
 
   // Action buttons
@@ -378,8 +1113,9 @@ function renderDetail(): void {
 
   const accept = document.createElement("button");
   accept.className = "btn btn--primary";
-  accept.textContent = "Mark as Done";
-  accept.onclick = async () => {
+  accept.textContent = "Take current action";
+  accept.onclick = async (event) => {
+    event.stopPropagation();
     setBusy(true);
     try {
       await api(`/api/alerts/${a.alert_id}/accept`, { method: "POST", body: JSON.stringify({}) });
@@ -404,7 +1140,8 @@ function renderDetail(): void {
   const snooze = document.createElement("button");
   snooze.className = "btn";
   snooze.textContent = "Remind Me Later";
-  snooze.onclick = async () => {
+  snooze.onclick = async (event) => {
+    event.stopPropagation();
     setBusy(true);
     try {
       const days = Number(snoozeDays.value || "3");
@@ -428,19 +1165,31 @@ function renderDetail(): void {
 
   const review = document.createElement("button");
   review.className = "btn btn--ghost";
-  review.textContent = "Get AI Recommendation";
-  review.onclick = async () => {
-    setBusy(true);
+  review.textContent = aiReviewBusy ? "AI Review Running..." : "Get AI Recommendation";
+  review.disabled = aiReviewBusy;
+  review.onclick = async (event) => {
+    event.stopPropagation();
+    aiReviewBusyByAlertId.add(a.alert_id);
+    aiReviewErrorByAlertId.delete(a.alert_id);
+    renderAlerts();
     try {
       const manager_note = note.value.trim() || null;
-      const res = await api<Record<string, unknown>>(`/api/alerts/${a.alert_id}/review-ai`, {
+      const res = await api<AIReviewResponse>(`/api/alerts/${a.alert_id}/review-ai`, {
         method: "POST",
         body: JSON.stringify({ manager_note }),
       });
-      await refresh();
-      alert(`AI recommendation:\n\n${JSON.stringify(res, null, 2)}`);
+      aiReviewByAlertId.set(a.alert_id, res);
+      if (res.optional_script_change) {
+        upsertScriptInstruction(
+          res.optional_script_change.script_name,
+          res.optional_script_change.edit_instruction ?? res.optional_script_change.change_hint
+        );
+      }
+    } catch (err) {
+      aiReviewErrorByAlertId.set(a.alert_id, String(err));
     } finally {
-      setBusy(false);
+      aiReviewBusyByAlertId.delete(a.alert_id);
+      renderAlerts();
     }
   };
 
@@ -450,61 +1199,14 @@ function renderDetail(): void {
   actions.appendChild(row1);
   actions.appendChild(row2);
   container.appendChild(actions);
-
-  el.detail.innerHTML = "";
-  el.detail.appendChild(container);
+  return container;
 }
 
-function renderDashboard(dash: Dashboard): void {
-  el.dashMeta.textContent = `Last 14 days: ${formatDateRange(dash.start_day, dash.end_day)}`;
+function renderDashboard(dash: Dashboard, inv: InventoryResponse): void {
+  const roleLabel = ROLE_SCOPE[activeRole].label;
+  el.dashMeta.textContent = `${roleLabel} · Last 14 days: ${formatDateRange(dash.start_day, dash.end_day)}`;
   el.dashboard.innerHTML = "";
-
-  // Revenue section
-  const revenueHeader = document.createElement("div");
-  revenueHeader.className = "section-header";
-  revenueHeader.textContent = "Revenue";
-  el.dashboard.appendChild(revenueHeader);
-
-  const totalsByLoc = new Map<number, { revenue: number; tx: number }>();
-  for (const row of dash.daily_revenue) {
-    const prev = totalsByLoc.get(row.location_id) ?? { revenue: 0, tx: 0 };
-    prev.revenue += Number(row.revenue);
-    prev.tx += Number(row.tx_count);
-    totalsByLoc.set(row.location_id, prev);
-  }
-
-  const revenueGrid = document.createElement("div");
-  revenueGrid.className = "stat-grid";
-
-  if (totalsByLoc.size === 0) {
-    const empty = document.createElement("div");
-    empty.className = "detail__empty";
-    empty.textContent = "No revenue data available yet.";
-    revenueGrid.appendChild(empty);
-  } else {
-    for (const [loc, total] of [...totalsByLoc.entries()].sort((a, b) => a[0] - b[0])) {
-      const card = document.createElement("div");
-      card.className = "stat-card";
-
-      const label = document.createElement("div");
-      label.className = "stat-card__label";
-      label.textContent = formatLocation(loc);
-
-      const amount = document.createElement("div");
-      amount.className = "stat-card__value";
-      amount.textContent = formatCurrency(total.revenue);
-
-      const sub = document.createElement("div");
-      sub.className = "stat-card__sub";
-      sub.textContent = `${total.tx.toLocaleString("en-US")} sales`;
-
-      card.appendChild(label);
-      card.appendChild(amount);
-      card.appendChild(sub);
-      revenueGrid.appendChild(card);
-    }
-  }
-  el.dashboard.appendChild(revenueGrid);
+  renderInventory(inv, dash);
 
   // Alert patterns section
   if (dash.top_alert_patterns.length > 0) {
@@ -557,6 +1259,540 @@ function renderDashboard(dash: Dashboard): void {
   }
 }
 
+async function loadScriptDetail(scriptName: string): Promise<void> {
+  if (scriptDetailByName.has(scriptName)) return;
+  if (scriptBusyByName.get(scriptName) === "loading") return;
+  scriptBusyByName.set(scriptName, "loading");
+  scriptErrorByName.delete(scriptName);
+  renderScripts();
+  try {
+    const detail = await api<ScriptDetail>(`/api/scripts/${scriptName}`);
+    scriptDetailByName.set(scriptName, detail);
+  } catch (err) {
+    scriptErrorByName.set(scriptName, String(err));
+  } finally {
+    scriptBusyByName.delete(scriptName);
+    renderScripts();
+  }
+}
+
+function mergeScriptRow(detail: ScriptDetail): void {
+  const idx = rawScripts.findIndex((s) => s.script_name === detail.script_name);
+  const row: ScriptListRow = {
+    script_name: detail.script_name,
+    enabled: detail.enabled,
+    active_source: detail.active_source,
+    active_revision_id: detail.active_revision_id,
+    baseline_sha: detail.baseline_sha,
+    active_sha: detail.active_sha,
+  };
+  if (idx >= 0) rawScripts[idx] = row;
+  else rawScripts.push(row);
+  rawScripts = [...rawScripts].sort((a, b) => a.script_name.localeCompare(b.script_name));
+}
+
+async function setScriptEnabled(scriptName: string, enabled: boolean): Promise<void> {
+  scriptBusyByName.set(scriptName, "toggle");
+  scriptErrorByName.delete(scriptName);
+  renderScripts();
+  try {
+    const detail = await api<ScriptDetail>(`/api/scripts/${scriptName}/enabled`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    scriptDetailByName.set(scriptName, detail);
+    mergeScriptRow(detail);
+  } catch (err) {
+    scriptErrorByName.set(scriptName, String(err));
+  } finally {
+    scriptBusyByName.delete(scriptName);
+    renderScripts();
+  }
+}
+
+async function generateScriptDraft(scriptName: string): Promise<void> {
+  const instruction = (scriptInstructionByName.get(scriptName) ?? "").trim();
+  if (!instruction) return;
+
+  let oldCode: string | null = null;
+  try {
+    let detail = scriptDetailByName.get(scriptName) ?? null;
+    if (!detail) {
+      detail = await api<ScriptDetail>(`/api/scripts/${scriptName}`);
+      scriptDetailByName.set(scriptName, detail);
+      mergeScriptRow(detail);
+    }
+    oldCode = detail.active_code ?? null;
+  } catch {
+    oldCode = null;
+  }
+
+  scriptCompareModalState = {
+    scriptName,
+    instruction,
+    revisionId: null,
+    phase: "generating",
+    loading: true,
+    error: null,
+    oldCode,
+    newCode: null,
+    comparison: null,
+    finalCheckLoading: false,
+    finalCheckError: null,
+    finalCheck: null,
+  };
+  renderScriptCompareModal();
+
+  scriptBusyByName.set(scriptName, "draft");
+  scriptErrorByName.delete(scriptName);
+  renderScripts();
+  try {
+    const draft = await api<ScriptDraft>(`/api/scripts/${scriptName}/generate-edit`, {
+      method: "POST",
+      body: JSON.stringify({ instruction }),
+    });
+    scriptDraftByName.set(scriptName, draft);
+
+    scriptCompareModalState = {
+      scriptName,
+      instruction,
+      revisionId: draft.revision_id,
+      phase: "comparing",
+      loading: true,
+      error: null,
+      oldCode,
+      newCode: draft.code,
+      comparison: null,
+      finalCheckLoading: false,
+      finalCheckError: null,
+      finalCheck: null,
+    };
+    renderScriptCompareModal();
+
+    const compareRes = await api<ScriptDraftCompareResponse>(
+      `/api/scripts/${scriptName}/compare-draft`,
+      {
+        method: "POST",
+        body: JSON.stringify({ revision_id: draft.revision_id }),
+      }
+    );
+    scriptCompareModalState = {
+      scriptName,
+      instruction,
+      revisionId: draft.revision_id,
+      phase: "final_checking",
+      loading: false,
+      error: null,
+      oldCode,
+      newCode: draft.code,
+      comparison: compareRes.comparison ?? null,
+      finalCheckLoading: true,
+      finalCheckError: null,
+      finalCheck: null,
+    };
+    renderScriptCompareModal();
+    await runDraftFinalCheck(
+      scriptName,
+      draft.revision_id,
+      compareRes.comparison ?? null,
+      instruction
+    );
+  } catch (err) {
+    const message = String(err);
+    scriptErrorByName.set(scriptName, message);
+    const existing = scriptCompareModalState;
+    scriptCompareModalState = {
+      scriptName,
+      instruction,
+      revisionId: existing?.revisionId ?? null,
+      phase: "done",
+      loading: false,
+      error: `Failed to generate script draft: ${message}`,
+      oldCode: existing?.oldCode ?? oldCode,
+      newCode: existing?.newCode ?? null,
+      comparison: null,
+      finalCheckLoading: false,
+      finalCheckError: null,
+      finalCheck: null,
+    };
+    renderScriptCompareModal();
+  } finally {
+    scriptBusyByName.delete(scriptName);
+    renderScripts();
+  }
+}
+
+async function openScriptCompareModalForDraft(scriptName: string): Promise<void> {
+  const draft = scriptDraftByName.get(scriptName);
+  if (!draft) return;
+
+  let oldCode: string | null = null;
+  try {
+    let detail = scriptDetailByName.get(scriptName) ?? null;
+    if (!detail) {
+      detail = await api<ScriptDetail>(`/api/scripts/${scriptName}`);
+      scriptDetailByName.set(scriptName, detail);
+      mergeScriptRow(detail);
+    }
+    oldCode = detail.active_code ?? null;
+  } catch {
+    oldCode = null;
+  }
+
+  scriptCompareModalState = {
+    scriptName,
+    instruction: scriptInstructionByName.get(scriptName) ?? "",
+    revisionId: draft.revision_id,
+    phase: "comparing",
+    loading: true,
+    error: null,
+    oldCode,
+    newCode: draft.code,
+    comparison: null,
+    finalCheckLoading: false,
+    finalCheckError: null,
+    finalCheck: null,
+  };
+  renderScriptCompareModal();
+
+  try {
+    const compareRes = await api<ScriptDraftCompareResponse>(
+      `/api/scripts/${scriptName}/compare-draft`,
+      {
+        method: "POST",
+        body: JSON.stringify({ revision_id: draft.revision_id }),
+      }
+    );
+    scriptCompareModalState = {
+      scriptName,
+      instruction: scriptInstructionByName.get(scriptName) ?? "",
+      revisionId: draft.revision_id,
+      phase: "final_checking",
+      loading: false,
+      error: null,
+      oldCode,
+      newCode: draft.code,
+      comparison: compareRes.comparison ?? null,
+      finalCheckLoading: true,
+      finalCheckError: null,
+      finalCheck: null,
+    };
+    renderScriptCompareModal();
+    await runDraftFinalCheck(
+      scriptName,
+      draft.revision_id,
+      compareRes.comparison ?? null,
+      scriptInstructionByName.get(scriptName) ?? ""
+    );
+  } catch (err) {
+    scriptCompareModalState = {
+      scriptName,
+      instruction: scriptInstructionByName.get(scriptName) ?? "",
+      revisionId: draft.revision_id,
+      phase: "done",
+      loading: false,
+      error: `Failed to run historical comparison: ${String(err)}`,
+      oldCode,
+      newCode: draft.code,
+      comparison: null,
+      finalCheckLoading: false,
+      finalCheckError: null,
+      finalCheck: null,
+    };
+  }
+  renderScriptCompareModal();
+}
+
+async function runDraftFinalCheck(
+  scriptName: string,
+  revisionId: string,
+  comparison: ScriptDraftComparison | null,
+  instruction: string
+): Promise<void> {
+  try {
+    const finalCheck = await api<ScriptDraftFinalCheckResponse>(
+      `/api/scripts/${scriptName}/final-check`,
+      {
+        method: "POST",
+        body: JSON.stringify({ revision_id: revisionId, comparison }),
+      }
+    );
+    if (
+      !scriptCompareModalState ||
+      scriptCompareModalState.scriptName !== scriptName ||
+      scriptCompareModalState.revisionId !== revisionId
+    ) {
+      return;
+    }
+    scriptCompareModalState = {
+      ...scriptCompareModalState,
+      instruction,
+      phase: "done",
+      finalCheckLoading: false,
+      finalCheckError: null,
+      finalCheck,
+    };
+  } catch (err) {
+    if (
+      !scriptCompareModalState ||
+      scriptCompareModalState.scriptName !== scriptName ||
+      scriptCompareModalState.revisionId !== revisionId
+    ) {
+      return;
+    }
+    scriptCompareModalState = {
+      ...scriptCompareModalState,
+      instruction,
+      phase: "done",
+      finalCheckLoading: false,
+      finalCheckError: `Final check failed: ${String(err)}`,
+      finalCheck: null,
+    };
+  }
+  renderScriptCompareModal();
+}
+
+async function activateScriptDraft(scriptName: string): Promise<boolean> {
+  const draft = scriptDraftByName.get(scriptName);
+  if (!draft) return false;
+
+  let success = false;
+  scriptBusyByName.set(scriptName, "activate");
+  scriptErrorByName.delete(scriptName);
+  renderScripts();
+  renderScriptCompareModal();
+  try {
+    const detail = await api<ScriptDetail>(`/api/scripts/${scriptName}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ revision_id: draft.revision_id }),
+    });
+    scriptDetailByName.set(scriptName, detail);
+    scriptDraftByName.delete(scriptName);
+    mergeScriptRow(detail);
+    success = true;
+  } catch (err) {
+    scriptErrorByName.set(scriptName, String(err));
+  } finally {
+    scriptBusyByName.delete(scriptName);
+    renderScripts();
+    renderScriptCompareModal();
+  }
+  return success;
+}
+
+async function revertScript(scriptName: string): Promise<void> {
+  scriptBusyByName.set(scriptName, "revert");
+  scriptErrorByName.delete(scriptName);
+  renderScripts();
+  try {
+    const detail = await api<ScriptDetail>(`/api/scripts/${scriptName}/revert`, {
+      method: "POST",
+    });
+    scriptDetailByName.set(scriptName, detail);
+    scriptDraftByName.delete(scriptName);
+    mergeScriptRow(detail);
+  } catch (err) {
+    scriptErrorByName.set(scriptName, String(err));
+  } finally {
+    scriptBusyByName.delete(scriptName);
+    renderScripts();
+  }
+}
+
+function renderScripts(): void {
+  el.scriptsList.innerHTML = "";
+
+  if (rawScripts.length === 0) {
+    el.scriptsMeta.textContent = "No scripts found.";
+    const empty = document.createElement("div");
+    empty.className = "detail__empty";
+    empty.textContent = "No scripts available.";
+    el.scriptsList.appendChild(empty);
+    return;
+  }
+
+  if (!selectedScriptName) selectedScriptName = rawScripts[0].script_name;
+  if (!rawScripts.some((s) => s.script_name === selectedScriptName)) {
+    selectedScriptName = rawScripts[0].script_name;
+  }
+
+  el.scriptsMeta.textContent = `${rawScripts.length} scripts · click a script to inspect/edit`;
+
+  for (const row of rawScripts) {
+    const scriptName = row.script_name;
+    const isActive = scriptName === selectedScriptName;
+    const card = document.createElement("div");
+    card.className = `card${isActive ? " card--active" : ""}`;
+    card.onclick = () => {
+      selectedScriptName = scriptName;
+      renderScripts();
+      void loadScriptDetail(scriptName);
+    };
+
+    const top = document.createElement("div");
+    top.className = "script-top";
+
+    const left = document.createElement("div");
+    left.className = "script-top__left";
+
+    const name = document.createElement("div");
+    name.className = "script-top__name";
+    name.textContent = scriptName;
+    left.appendChild(name);
+
+    const right = document.createElement("div");
+    right.className = "script-top__meta";
+    const source = document.createElement("span");
+    source.className = "tag";
+    source.textContent = row.active_source === "override" ? "Override" : "Baseline";
+    right.appendChild(source);
+
+    const sha = document.createElement("span");
+    sha.className = "tag";
+    sha.textContent = row.active_sha;
+    right.appendChild(sha);
+
+    const toggle = document.createElement("label");
+    toggle.className = "script-toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = row.enabled;
+    checkbox.disabled = scriptBusyByName.has(scriptName);
+    checkbox.onchange = (event) => {
+      event.stopPropagation();
+      void setScriptEnabled(scriptName, checkbox.checked);
+    };
+    toggle.onclick = (event) => event.stopPropagation();
+    toggle.appendChild(checkbox);
+    toggle.appendChild(document.createTextNode("Enabled"));
+    right.appendChild(toggle);
+
+    top.appendChild(left);
+    top.appendChild(right);
+    card.appendChild(top);
+
+    if (isActive) {
+      const busyState = scriptBusyByName.get(scriptName);
+      if (busyState === "loading") {
+        card.appendChild(createSpinnerLabel("Loading script details..."));
+      }
+
+      const err = scriptErrorByName.get(scriptName);
+      if (err) {
+        const errEl = document.createElement("div");
+        errEl.className = "llm-status llm-status--error";
+        errEl.textContent = `Script operation failed: ${err}`;
+        card.appendChild(errEl);
+      }
+
+      const detail = scriptDetailByName.get(scriptName);
+      if (detail) {
+        const code = document.createElement("pre");
+        code.className = "code";
+        code.textContent = detail.active_code;
+        card.appendChild(code);
+
+        const editor = document.createElement("div");
+        editor.className = "script-editor";
+
+        const hint = document.createElement("div");
+        hint.className = "script-editor__hint";
+        hint.textContent =
+          "Ask for concrete changes: thresholds, grouping logic, cooldown windows, or stricter evidence requirements.";
+        editor.appendChild(hint);
+
+        const promptRow = document.createElement("div");
+        promptRow.className = "script-editor__row";
+        for (const prompt of quickEditPrompts(scriptName)) {
+          const chip = document.createElement("button");
+          chip.className = "btn btn--ghost btn--small";
+          chip.textContent = prompt.length > 42 ? `${prompt.slice(0, 42)}...` : prompt;
+          chip.onclick = (event) => {
+            event.stopPropagation();
+            upsertScriptInstruction(scriptName, prompt);
+            renderScripts();
+          };
+          promptRow.appendChild(chip);
+        }
+        editor.appendChild(promptRow);
+
+        const instruction = document.createElement("textarea");
+        instruction.className = "field__text";
+        instruction.placeholder =
+          "Example: Raise undercharge trigger from -5% to -8% and require at least 3 undercharge events in a 7-day window.";
+        instruction.value = scriptInstructionByName.get(scriptName) ?? "";
+        instruction.oninput = () => {
+          scriptInstructionByName.set(scriptName, instruction.value);
+        };
+        instruction.onclick = (event) => event.stopPropagation();
+        editor.appendChild(instruction);
+
+        const rowActions = document.createElement("div");
+        rowActions.className = "script-editor__row";
+
+        const generating = busyState === "draft";
+        const generate = document.createElement("button");
+        generate.className = "btn btn--primary";
+        generate.textContent = generating ? "Generating Draft..." : "Generate AI Draft";
+        generate.disabled =
+          scriptBusyByName.has(scriptName) ||
+          (scriptInstructionByName.get(scriptName) ?? "").trim().length === 0;
+        generate.onclick = (event) => {
+          event.stopPropagation();
+          void generateScriptDraft(scriptName);
+        };
+        rowActions.appendChild(generate);
+
+        if (detail.active_source === "override") {
+          const revert = document.createElement("button");
+          revert.className = "btn";
+          revert.textContent = busyState === "revert" ? "Reverting..." : "Revert to Baseline";
+          revert.disabled = scriptBusyByName.has(scriptName);
+          revert.onclick = (event) => {
+            event.stopPropagation();
+            void revertScript(scriptName);
+          };
+          rowActions.appendChild(revert);
+        }
+
+        editor.appendChild(rowActions);
+        card.appendChild(editor);
+      } else if (!scriptBusyByName.has(scriptName)) {
+        void loadScriptDetail(scriptName);
+      }
+
+      const draft = scriptDraftByName.get(scriptName);
+      if (draft) {
+        const draftHeader = document.createElement("div");
+        draftHeader.className = "section-header";
+        draftHeader.textContent = `Draft Revision ${draft.revision_id.slice(0, 12)}`;
+        card.appendChild(draftHeader);
+
+        const draftHint = document.createElement("div");
+        draftHint.className = "script-editor__hint";
+        draftHint.textContent =
+          "Review old vs new script, trigger comparison, and final AI recommendation in one modal.";
+        card.appendChild(draftHint);
+
+        const activateRow = document.createElement("div");
+        activateRow.className = "script-editor__row";
+        const review = document.createElement("button");
+        review.className = "btn btn--primary";
+        review.textContent = "Review Draft Backtest";
+        review.disabled = scriptBusyByName.has(scriptName);
+        review.onclick = (event) => {
+          event.stopPropagation();
+          void openScriptCompareModalForDraft(scriptName);
+        };
+        activateRow.appendChild(review);
+        card.appendChild(activateRow);
+      }
+    }
+
+    el.scriptsList.appendChild(card);
+  }
+}
+
 const INGREDIENT_ICONS: Record<string, string> = {
   espresso_shot: "\u2615",
   milk: "\ud83e\udd5b",
@@ -586,43 +1822,88 @@ function formatIngredientName(raw: string): string {
   return raw.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function ingredientFillPercent(name: string, quantity: number): number {
-  // Realistic container capacities per machine_capacities.md
-  const capacities: Record<string, number> = {
-    espresso_shot: 50,
-    milk: 5000,
-    chocolate_powder: 250,
-    caramel_syrup: 750,
-    vanilla_syrup: 750,
-    whiskey: 750,
-    water: 5000,
-    tea_bag: 50,
-  };
-  const cap = capacities[name];
-  if (!cap) return Math.min(100, Math.max(0, quantity));
-  return Math.min(100, Math.max(0, (quantity / cap) * 100));
+function ingredientFillPercent(quantity: number, capacity: number | null | undefined): number {
+  if (!capacity || capacity <= 0) return 0;
+  return Math.min(100, Math.max(0, (quantity / capacity) * 100));
 }
 
-function renderInventory(inv: InventoryResponse): void {
-  el.dashboard.insertAdjacentHTML("beforeend", "");
+function renderInventory(inv: InventoryResponse, dash: Dashboard): void {
+  const revenueByMachine = new Map<string, { revenue: number; tx: number }>();
+  for (const row of dash.machine_revenue) {
+    revenueByMachine.set(`${row.location_id}:${row.machine_id}`, {
+      revenue: Number(row.revenue),
+      tx: Number(row.tx_count),
+    });
+  }
+
+  const section = document.createElement("div");
+  section.className = "inventory-section";
 
   const header = document.createElement("div");
   header.className = "section-header";
-  header.textContent = "Machine Inventory";
-  el.dashboard.appendChild(header);
+  header.textContent = "View by Location";
+  section.appendChild(header);
 
   if (inv.locations.length === 0) {
     const empty = document.createElement("div");
     empty.className = "detail__empty";
-    empty.textContent = "No inventory data yet. Run a day to sync inventory.";
-    el.dashboard.appendChild(empty);
+    empty.textContent = "No inventory data available for this role.";
+    section.appendChild(empty);
+    el.dashboard.prepend(section);
     return;
   }
 
   const dateNote = document.createElement("div");
   dateNote.className = "inventory-date";
   dateNote.textContent = `As of ${formatDate(inv.snapshot_date)}`;
-  el.dashboard.appendChild(dateNote);
+  section.appendChild(dateNote);
+
+  const locationOverview = document.createElement("div");
+  locationOverview.className = "location-overview";
+
+  for (const loc of inv.locations) {
+    const card = document.createElement("div");
+    card.className = "location-card";
+
+    const title = document.createElement("div");
+    title.className = "location-card__title";
+    title.textContent = loc.location_name;
+
+    const meta = document.createElement("div");
+    meta.className = "location-card__meta";
+    meta.textContent = `${loc.machines.length} machine${loc.machines.length === 1 ? "" : "s"}`;
+
+    const machines = document.createElement("div");
+    machines.className = "location-card__machines";
+    const locationCurrency = loc.currency ?? currencyForLocation(loc.location_id);
+    for (const machine of loc.machines) {
+      const chip = document.createElement("span");
+      chip.className = "location-card__chip";
+      chip.textContent = machine.machine_name;
+      chip.style.cursor = "pointer";
+      chip.onclick = (event) => {
+        event.stopPropagation();
+        void openMachineSalesModal(
+          machine.machine_id,
+          machine.machine_name,
+          loc.location_id,
+          loc.location_name
+        );
+      };
+      machines.appendChild(chip);
+    }
+
+    card.appendChild(title);
+    card.appendChild(meta);
+    card.appendChild(machines);
+    locationOverview.appendChild(card);
+  }
+  section.appendChild(locationOverview);
+
+  const detailHeader = document.createElement("div");
+  detailHeader.className = "section-header";
+  detailHeader.textContent = "Machine Ingredient Levels";
+  section.appendChild(detailHeader);
 
   for (const loc of inv.locations) {
     const locSection = document.createElement("div");
@@ -633,12 +1914,25 @@ function renderInventory(inv: InventoryResponse): void {
     locHeader.textContent = loc.location_name;
     locSection.appendChild(locHeader);
 
+    const locationCurrency = loc.currency ?? currencyForLocation(loc.location_id);
     for (const machine of loc.machines) {
       const machineCard = document.createElement("div");
-      machineCard.className = "inv-machine";
+      machineCard.className = "inv-machine inv-machine--clickable";
+      machineCard.onclick = (event) => {
+        if ((event.target as HTMLElement).closest("button")) return;
+        void openMachineSalesModal(
+          machine.machine_id,
+          machine.machine_name,
+          loc.location_id,
+          loc.location_name
+        );
+      };
 
-      const machineHeader = document.createElement("div");
-      machineHeader.className = "inv-machine__header";
+      const machineLayout = document.createElement("div");
+      machineLayout.className = "inv-machine__layout";
+
+      const machineSide = document.createElement("div");
+      machineSide.className = "inv-machine__side";
 
       const iconWrap = document.createElement("div");
       iconWrap.className = "inv-machine__icon";
@@ -655,19 +1949,48 @@ function renderInventory(inv: InventoryResponse): void {
       machineId.className = "inv-machine__id";
       machineId.textContent = `Machine #${machine.machine_id}`;
 
+      const machineRevenue = revenueByMachine.get(`${loc.location_id}:${machine.machine_id}`);
+      const machinePerf = document.createElement("div");
+      machinePerf.className = "inv-machine__perf";
+      machinePerf.innerHTML = `
+        <div class="inv-machine__rev">${formatCurrency(machineRevenue?.revenue ?? 0, locationCurrency)}</div>
+        <div class="inv-machine__tx">${(machineRevenue?.tx ?? 0).toLocaleString("en-US")} sales</div>
+      `;
+
+      const restockBtn = document.createElement("button");
+      restockBtn.className = "btn btn--small";
+      restockBtn.textContent = "Restock machine (tomorrow)";
+      restockBtn.onclick = async () => {
+        setBusy(true);
+        try {
+          await api("/api/restock-machine", {
+            method: "POST",
+            body: JSON.stringify({ machine_id: machine.machine_id }),
+          });
+          await refresh();
+        } finally {
+          setBusy(false);
+        }
+      };
+
       machineInfo.appendChild(machineName);
       machineInfo.appendChild(machineId);
-      machineHeader.appendChild(iconWrap);
-      machineHeader.appendChild(machineInfo);
-      machineCard.appendChild(machineHeader);
+      machineInfo.appendChild(machinePerf);
+      machineInfo.appendChild(restockBtn);
+      machineSide.appendChild(iconWrap);
+      machineSide.appendChild(machineInfo);
 
       const ingredientsList = document.createElement("div");
-      ingredientsList.className = "inv-ingredients";
+      ingredientsList.className = "inv-ingredients inv-ingredients--dense";
 
       for (const ing of machine.ingredients) {
-        const pct = ingredientFillPercent(ing.name, ing.quantity);
+        const startQty = ing.start_quantity ?? ing.quantity;
+        const endQty = ing.end_quantity ?? ing.quantity;
+        const capacity = ing.capacity ?? null;
+        const startPct = ingredientFillPercent(startQty, capacity);
+        const endPct = ingredientFillPercent(endQty, capacity);
         const icon = INGREDIENT_ICONS[ing.name] ?? "\u2022";
-        const isLow = pct < 25;
+        const isLow = endPct > 0 && endPct < 25;
 
         const row = document.createElement("div");
         row.className = `inv-ingredient${isLow ? " inv-ingredient--low" : ""}`;
@@ -676,47 +1999,121 @@ function renderInventory(inv: InventoryResponse): void {
         label.className = "inv-ingredient__label";
         label.textContent = `${icon} ${formatIngredientName(ing.name)}`;
 
-        const bar = document.createElement("div");
-        bar.className = "inv-ingredient__bar";
-        const fill = document.createElement("div");
-        fill.className = `inv-ingredient__fill${isLow ? " inv-ingredient__fill--low" : ""}`;
-        fill.style.width = `${pct}%`;
-        bar.appendChild(fill);
+        const chart = document.createElement("div");
+        chart.className = "inv-ingredient__chart";
 
-        const qty = document.createElement("div");
-        qty.className = "inv-ingredient__qty";
-        qty.textContent = `${ing.quantity} ${ing.unit}`;
+        const meta = document.createElement("div");
+        meta.className = "inv-ingredient__meta";
+        const remainingText =
+          capacity && capacity > 0 ? `${Math.round(endPct)}% remaining` : "Capacity unknown";
+        meta.innerHTML = `Capacity ${capacity != null ? `${capacity.toLocaleString("en-US")} ${ing.capacity_unit ?? ing.unit}` : "N/A"} · Start ${startQty.toLocaleString("en-US")} ${ing.unit} · End ${endQty.toLocaleString("en-US")} ${ing.unit} · <span class="inv-ingredient__pct">${escapeHtml(remainingText)}</span>`;
+
+        const bar = document.createElement("div");
+        bar.className = "inv-ingredient__bar inv-ingredient__bar--single";
+
+        const startFill = document.createElement("div");
+        startFill.className = "inv-ingredient__fill inv-ingredient__fill--start";
+        startFill.style.width = `${startPct}%`;
+
+        const endFill = document.createElement("div");
+        endFill.className = `inv-ingredient__fill inv-ingredient__fill--end${isLow ? " inv-ingredient__fill--low" : ""}`;
+        endFill.style.width = `${endPct}%`;
+
+        bar.appendChild(startFill);
+        bar.appendChild(endFill);
+
+        chart.appendChild(meta);
+        chart.appendChild(bar);
 
         row.appendChild(label);
-        row.appendChild(bar);
-        row.appendChild(qty);
+        row.appendChild(chart);
         ingredientsList.appendChild(row);
       }
 
-      machineCard.appendChild(ingredientsList);
+      machineLayout.appendChild(machineSide);
+      machineLayout.appendChild(ingredientsList);
+      machineCard.appendChild(machineLayout);
       locSection.appendChild(machineCard);
     }
 
-    el.dashboard.appendChild(locSection);
+    section.appendChild(locSection);
   }
+
+  el.dashboard.prepend(section);
+}
+
+function applyRoleFilterAndRender(): void {
+  const role = ROLE_SCOPE[activeRole];
+  const allowed = role.locationIds;
+
+  alerts = rawAlerts.filter((a) => (allowed ? allowed.includes(a.location_id) : true));
+  const dash = rawDashboard ? filterDashboardForRole(rawDashboard) : null;
+  const inv = rawInventory ? filterInventoryForRole(rawInventory) : null;
+
+  if (selectedAlertId && !alerts.some((a) => a.alert_id === selectedAlertId)) {
+    selectedAlertId = null;
+  }
+
+  renderState();
+  renderAlerts();
+  if (dash && inv) renderDashboard(dash, inv);
+  renderScripts();
+  renderMachineSalesModal();
+  renderScriptCompareModal();
 }
 
 async function refresh(): Promise<void> {
   state = await api<EngineState>("/api/state");
-  alerts = await api<AlertRow[]>("/api/alerts?limit=200");
-  const dash = await api<Dashboard>("/api/dashboard?days=14");
-  const inv = await api<InventoryResponse>("/api/inventory");
-  if (selectedAlertId && !alerts.some((a) => a.alert_id === selectedAlertId)) {
-    selectedAlertId = null;
+  rawAlerts = await api<AlertRow[]>("/api/alerts?limit=200");
+  rawDashboard = await api<Dashboard>("/api/dashboard?days=14");
+  updateLocationCurrencyFromDashboard(rawDashboard);
+  rawInventory = await api<InventoryResponse>("/api/inventory");
+  updateLocationCurrencyFromInventory(rawInventory);
+  rawScripts = await api<ScriptListRow[]>("/api/scripts");
+  const scriptNames = new Set(rawScripts.map((s) => s.script_name));
+  for (const key of [...scriptDetailByName.keys()]) {
+    if (!scriptNames.has(key)) scriptDetailByName.delete(key);
   }
-  renderState();
-  renderAlerts();
-  renderDetail();
-  renderDashboard(dash);
-  renderInventory(inv);
+  for (const key of [...scriptDraftByName.keys()]) {
+    if (!scriptNames.has(key)) scriptDraftByName.delete(key);
+  }
+  for (const key of [...scriptInstructionByName.keys()]) {
+    if (!scriptNames.has(key)) scriptInstructionByName.delete(key);
+  }
+  applyRoleFilterAndRender();
+  if (selectedScriptName) {
+    void loadScriptDetail(selectedScriptName);
+  }
 }
 
 async function main(): Promise<void> {
+  el.roleSelect.value = activeRole;
+  el.roleSelect.onchange = () => {
+    activeRole = el.roleSelect.value as RoleId;
+    applyRoleFilterAndRender();
+  };
+  el.machineSalesClose.onclick = () => closeMachineSalesModal();
+  el.machineSalesBackdrop.onclick = () => closeMachineSalesModal();
+  el.scriptCompareClose.onclick = () => closeScriptCompareModal();
+  el.scriptCompareBackdrop.onclick = () => closeScriptCompareModal();
+  el.aboutClose.onclick = () => closeAboutModal();
+  el.aboutBackdrop.onclick = () => closeAboutModal();
+  el.aboutBtn.onclick = () => openAboutModal();
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (aboutModalOpen) {
+      closeAboutModal();
+      return;
+    }
+    if (scriptCompareModalState) {
+      closeScriptCompareModal();
+      return;
+    }
+    if (machineSalesModalState) {
+      closeMachineSalesModal();
+    }
+  });
+
   el.resetBtn.onclick = async () => {
     setBusy(true);
     try {
@@ -764,6 +2161,10 @@ async function main(): Promise<void> {
     }
   };
 
+  // Allow opting out for screenshots/embeds: `?about=0`.
+  if (new URLSearchParams(window.location.search).get("about") !== "0") {
+    openAboutModal();
+  }
   await refresh();
 }
 

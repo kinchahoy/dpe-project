@@ -39,15 +39,25 @@ def _(mo):
 def _(KaggleDatasetAdapter, kagglehub, pl):
     # Load both CSV files — Machine 1 and Machine 2 at the Ukraine location
     # index_1.csv (Machine 1) has a 'card' column; index_2.csv (Machine 2) does not
-    _df1 = kagglehub.dataset_load(
-        KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_1.csv"
-    ).collect().with_columns(pl.lit("Machine 1").alias("machine"))
-    _df2 = kagglehub.dataset_load(
-        KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_2.csv"
-    ).collect().with_columns(pl.lit("Machine 2").alias("machine"))
+    _df1 = (
+        kagglehub.dataset_load(
+            KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_1.csv"
+        )
+        .collect()
+        .with_columns(pl.lit("Machine 1").alias("machine"))
+    )
+    _df2 = (
+        kagglehub.dataset_load(
+            KaggleDatasetAdapter.POLARS, "ihelon/coffee-sales", "index_2.csv"
+        )
+        .collect()
+        .with_columns(pl.lit("Machine 2").alias("machine"))
+    )
 
     # Add missing 'card' column to df2 so schemas match, then concat
-    _df2 = _df2.with_columns(pl.lit(None).cast(pl.Utf8).alias("card")).select(_df1.columns)
+    _df2 = _df2.with_columns(pl.lit(None).cast(pl.Utf8).alias("card")).select(
+        _df1.columns
+    )
     raw = pl.concat([_df1, _df2])
 
     # Normalize coffee names (e.g. "Americano with Milk" vs "Americano with milk")
@@ -55,7 +65,9 @@ def _(KaggleDatasetAdapter, kagglehub, pl):
 
     # Parse datetime (two formats: with/without milliseconds) and derive time columns
     df = raw.with_columns(
-        pl.col("datetime").str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False).alias("dt"),
+        pl.col("datetime")
+        .str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False)
+        .alias("dt"),
         pl.col("date").str.to_date("%Y-%m-%d").alias("date_parsed"),
     ).with_columns(
         pl.col("dt").dt.hour().alias("hour"),
@@ -71,9 +83,7 @@ def _(df, mo, pl):
     _date_min = df["date_parsed"].min()
     _date_max = df["date_parsed"].max()
     _total_revenue = df["money"].sum()
-    _card_pct = (
-        df.filter(pl.col("cash_type") == "card").height / _total_txns * 100
-    )
+    _card_pct = df.filter(pl.col("cash_type") == "card").height / _total_txns * 100
     _avg_ticket = _total_revenue / _total_txns
     _m1_count = df.filter(pl.col("machine") == "Machine 1").height
     _m2_count = df.filter(pl.col("machine") == "Machine 2").height
@@ -130,10 +140,14 @@ def _(alt, df, mo, pl):
         .encode(
             x=alt.X("coffee_name:N", sort="-y", title="Coffee Type"),
             y=alt.Y("volume:Q", title="Transaction Count"),
-            color=alt.Color("revenue:Q", scale=alt.Scale(scheme="goldorange"), title="Revenue ($)"),
+            color=alt.Color(
+                "revenue:Q", scale=alt.Scale(scheme="goldorange"), title="Revenue ($)"
+            ),
             tooltip=["coffee_name", "volume", alt.Tooltip("revenue:Q", format="$.2f")],
         )
-        .properties(title="Product Popularity (Volume & Revenue)", width=600, height=350)
+        .properties(
+            title="Product Popularity (Volume & Revenue)", width=600, height=350
+        )
     )
     mo.ui.altair_chart(_chart)
     return
@@ -141,10 +155,7 @@ def _(alt, df, mo, pl):
 
 @app.cell
 def _(alt, df, mo, pl):
-    _heatmap_data = (
-        df.group_by("coffee_name", "hour")
-        .agg(pl.len().alias("count"))
-    )
+    _heatmap_data = df.group_by("coffee_name", "hour").agg(pl.len().alias("count"))
 
     _heatmap = (
         alt.Chart(_heatmap_data)
@@ -152,10 +163,16 @@ def _(alt, df, mo, pl):
         .encode(
             x=alt.X("hour:O", title="Hour of Day"),
             y=alt.Y("coffee_name:N", title="Coffee Type"),
-            color=alt.Color("count:Q", scale=alt.Scale(scheme="blues"), title="Transactions"),
+            color=alt.Color(
+                "count:Q", scale=alt.Scale(scheme="blues"), title="Transactions"
+            ),
             tooltip=["coffee_name", "hour", "count"],
         )
-        .properties(title="Demand Heatmap: Product x Hour (Stockout Risk Windows)", width=600, height=350)
+        .properties(
+            title="Demand Heatmap: Product x Hour (Stockout Risk Windows)",
+            width=600,
+            height=350,
+        )
     )
     mo.ui.altair_chart(_heatmap)
     return
@@ -167,7 +184,11 @@ def _(alt, df, mo, pl):
     _dow_data = (
         df.group_by("weekday")
         .agg(pl.len().alias("volume"))
-        .with_columns(pl.col("weekday").replace_strict(_dow_labels, return_dtype=pl.Utf8).alias("day_name"))
+        .with_columns(
+            pl.col("weekday")
+            .replace_strict(_dow_labels, return_dtype=pl.Utf8)
+            .alias("day_name")
+        )
         .sort("weekday")
     )
 
@@ -177,7 +198,9 @@ def _(alt, df, mo, pl):
         .encode(
             x=alt.X("day_name:N", sort=list(_dow_labels.values()), title="Day of Week"),
             y=alt.Y("volume:Q", title="Transaction Count"),
-            color=alt.Color("volume:Q", scale=alt.Scale(scheme="tealblues"), legend=None),
+            color=alt.Color(
+                "volume:Q", scale=alt.Scale(scheme="tealblues"), legend=None
+            ),
             tooltip=["day_name", "volume"],
         )
         .properties(title="Transaction Volume by Day of Week", width=500, height=300)
@@ -209,9 +232,9 @@ def _(df, mo, pl):
             f"""
             **Inventory Recommendations:**
 
-            - **Top sellers** (keep fully stocked): {', '.join(_top3)}
-            - **Low movers** (reduce inventory): {', '.join(_bottom3)}
-            - **Peak restock hours**: {', '.join(str(h) + ':00' for h in sorted(_peak_hours))}
+            - **Top sellers** (keep fully stocked): {", ".join(_top3)}
+            - **Low movers** (reduce inventory): {", ".join(_bottom3)}
+            - **Peak restock hours**: {", ".join(str(h) + ":00" for h in sorted(_peak_hours))}
               — ensure supplies are replenished *before* these windows
             """
         ),
@@ -271,7 +294,9 @@ def _(alt, coffee_dropdown, df, mo, pl):
     _combined = (
         alt.layer(_bars, _line)
         .resolve_scale(y="independent")
-        .properties(title=f"{_selected}: Avg Price vs Volume by Hour", width=600, height=350)
+        .properties(
+            title=f"{_selected}: Avg Price vs Volume by Hour", width=600, height=350
+        )
     )
     mo.ui.altair_chart(_combined)
     return
@@ -284,7 +309,9 @@ def _(alt, df, mo, pl):
         .agg(pl.col("money").sum().alias("revenue"))
         .sort("revenue", descending=True)
         .with_columns(
-            (pl.col("revenue").cum_sum() / pl.col("revenue").sum() * 100).alias("cumulative_pct")
+            (pl.col("revenue").cum_sum() / pl.col("revenue").sum() * 100).alias(
+                "cumulative_pct"
+            )
         )
     )
 
@@ -299,7 +326,11 @@ def _(alt, df, mo, pl):
                 alt.value("#5276A7"),
                 alt.value("#CCCCCC"),
             ),
-            tooltip=["coffee_name", alt.Tooltip("revenue:Q", format="$.2f"), alt.Tooltip("cumulative_pct:Q", format=".1f")],
+            tooltip=[
+                "coffee_name",
+                alt.Tooltip("revenue:Q", format="$.2f"),
+                alt.Tooltip("cumulative_pct:Q", format=".1f"),
+            ],
         )
     )
 
@@ -308,12 +339,18 @@ def _(alt, df, mo, pl):
         .mark_line(color="#F18727", strokeWidth=2, point=True)
         .encode(
             x=alt.X("coffee_name:N", sort="-y"),
-            y=alt.Y("cumulative_pct:Q", title="Cumulative %", scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y(
+                "cumulative_pct:Q",
+                title="Cumulative %",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
             tooltip=["coffee_name", alt.Tooltip("cumulative_pct:Q", format=".1f")],
         )
     )
 
-    _rule = alt.Chart().mark_rule(color="red", strokeDash=[4, 4]).encode(y=alt.datum(80))
+    _rule = (
+        alt.Chart().mark_rule(color="red", strokeDash=[4, 4]).encode(y=alt.datum(80))
+    )
 
     _chart = (
         alt.layer(_bars, _line, _rule)
@@ -329,7 +366,9 @@ def _(df, mo, pl):
     _rev_share = (
         df.group_by("coffee_name")
         .agg(pl.col("money").sum().alias("revenue"))
-        .with_columns((pl.col("revenue") / pl.col("revenue").sum() * 100).alias("share"))
+        .with_columns(
+            (pl.col("revenue") / pl.col("revenue").sum() * 100).alias("share")
+        )
         .sort("share", descending=True)
     )
     _top = _rev_share.head(1)
@@ -348,7 +387,7 @@ def _(df, mo, pl):
             **Pricing Recommendations:**
 
             - **{_top_name}** dominates with **{_top_share:.1f}%** of revenue — protect this product's pricing
-            - Core 80% revenue products: {', '.join(_core_products)} — focus pricing experiments here
+            - Core 80% revenue products: {", ".join(_core_products)} — focus pricing experiments here
             - Consider time-of-day pricing: premium during peak hours, discounts during low-volume periods
             """
         ),
@@ -390,7 +429,9 @@ def _(df, mo, pl):
 
 @app.cell
 def _(alt, df, mo, pl):
-    _cash_df = df.filter(pl.col("cash_type") == "cash").select("dt", "money", "coffee_name")
+    _cash_df = df.filter(pl.col("cash_type") == "cash").select(
+        "dt", "money", "coffee_name"
+    )
 
     _chart = (
         alt.Chart(_cash_df)
@@ -436,9 +477,7 @@ def _(df, mo, pl):
 @app.cell
 def _(alt, df, mo, pl):
     _hourly_payment = (
-        df.group_by("hour", "cash_type")
-        .agg(pl.len().alias("count"))
-        .sort("hour")
+        df.group_by("hour", "cash_type").agg(pl.len().alias("count")).sort("hour")
     )
 
     _chart = (
@@ -465,11 +504,10 @@ def _(df, mo, outliers, pl):
 
     # Off-hours cash concentration (before 7am or after 8pm)
     _off_hours_cash = df.filter(
-        (pl.col("cash_type") == "cash") & ((pl.col("hour") < 7) | (pl.col("hour") >= 20))
+        (pl.col("cash_type") == "cash")
+        & ((pl.col("hour") < 7) | (pl.col("hour") >= 20))
     ).height
-    _off_hours_all = df.filter(
-        (pl.col("hour") < 7) | (pl.col("hour") >= 20)
-    ).height
+    _off_hours_all = df.filter((pl.col("hour") < 7) | (pl.col("hour") >= 20)).height
     _off_cash_pct = _off_hours_cash / _off_hours_all * 100 if _off_hours_all > 0 else 0
 
     mo.callout(
@@ -631,7 +669,9 @@ def _(df, mo, pl):
 @app.cell(hide_code=True)
 def _(df, mo, pl):
     _total_rev = df["money"].sum()
-    _latte_rev = df.filter(pl.col("coffee_name").str.contains("(?i)latte"))["money"].sum()
+    _latte_rev = df.filter(pl.col("coffee_name").str.contains("(?i)latte"))[
+        "money"
+    ].sum()
     _latte_share = _latte_rev / _total_rev * 100
     _verdict = "CONFIRMED" if _latte_share > 30 else "REJECTED"
     _kind = "success" if _verdict == "CONFIRMED" else "danger"

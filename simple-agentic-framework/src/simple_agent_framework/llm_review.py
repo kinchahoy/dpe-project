@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from typing import cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -12,24 +13,36 @@ from .time_utils import utc_now
 
 
 class SuggestedAction(BaseModel):
-    action_type: str = Field(description="One of: RESTOCK_MACHINE, ORDER_INGREDIENTS, ADJUST_PRICE, SCHEDULE_SERVICE, CHECK_MACHINE, PROPOSE_DISCONTINUE")
+    action_type: str = Field(
+        description="One of: RESTOCK_MACHINE, ORDER_INGREDIENTS, ADJUST_PRICE, SCHEDULE_SERVICE, CHECK_MACHINE, PROPOSE_DISCONTINUE"
+    )
     reason: str = Field(description="Why this action is recommended")
-    params: dict[str, Any] = Field(default_factory=dict, description="Action-specific parameters")
+    params: dict[str, Any] = Field(
+        default_factory=dict, description="Action-specific parameters"
+    )
 
 
 class ScriptChange(BaseModel):
     script_name: str = Field(description="Name of the script to modify")
     change_description: str = Field(description="What to change and why")
+    edit_instruction: str = Field(
+        description="One concrete instruction to pass directly to the script-edit model"
+    )
 
 
 class AlertReview(BaseModel):
-    assessment: str = Field(description="Brief assessment of the alert's validity and urgency")
+    assessment: str = Field(
+        description="Brief assessment of the alert's validity and urgency"
+    )
     suggested_action: SuggestedAction = Field(description="Recommended next action")
-    script_change: ScriptChange | None = Field(default=None, description="Suggested script threshold change, if the alert pattern looks noisy")
+    script_change: ScriptChange | None = Field(
+        default=None,
+        description="Suggested script threshold change, if the alert pattern looks noisy",
+    )
 
 
 SYSTEM_PROMPT = """\
-You are an operations analyst for a coffee vending machine network.
+You are an operations analyst for a vending machine network.
 You review automated alerts and decide what action to take.
 
 When reviewing an alert:
@@ -37,6 +50,10 @@ When reviewing an alert:
 2. Recommend a concrete next action for the operations team.
 3. If multiple related alerts are open for the same script, consider whether \
 the detection threshold should be tightened (suggest a script change).
+
+If you suggest a script change, provide both:
+- a brief human explanation (`change_description`)
+- a direct implementation instruction (`edit_instruction`) for the script editor.
 
 Be concise and specific. Reference the evidence numbers in your assessment.\
 """
@@ -52,12 +69,16 @@ def _get_agent() -> Agent[None, AlertReview]:
             openai_reasoning_effort="medium",
             openai_reasoning_summary="concise",
         )
-        _agent = Agent(
-            model,
-            instructions=SYSTEM_PROMPT,
-            output_type=AlertReview,
-            model_settings=settings,
+        _agent = cast(
+            Agent[None, AlertReview],
+            Agent(
+                model,
+                instructions=SYSTEM_PROMPT,
+                output_type=AlertReview,
+                model_settings=settings,
+            ),
         )
+    assert _agent is not None
     return _agent
 
 
@@ -100,5 +121,8 @@ def review_alert_with_ai(
         "optional_script_change": {
             "script_name": review.script_change.script_name,
             "change_hint": review.script_change.change_description,
-        } if review.script_change else None,
+            "edit_instruction": review.script_change.edit_instruction,
+        }
+        if review.script_change
+        else None,
     }

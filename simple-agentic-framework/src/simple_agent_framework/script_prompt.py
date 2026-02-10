@@ -1,29 +1,36 @@
 from __future__ import annotations
 
 SCRIPT_GENERATION_TEMPLATE = """\
-You are generating a Python alert script for a coffee vending machine monitoring system.
+You are generating a Python alert script for a vending machine monitoring system.
 The script runs in a sandbox with NO imports allowed. Write plain Python only.
 
 ## Available input variables
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `as_of_date` | `str` | ISO date being analysed, e.g. "2024-01-15" |
-| `location_id` | `int` | Location identifier |
-| `machine_id` | `int` | Machine identifier |
-| `currency` | `str` | Currency code, e.g. "USD" |
-| `machine` | `dict` | Machine metadata: id, name, serial_number, model, installed_at, last_serviced_at, current_hours, location_id |
-| `location` | `dict` | Location metadata: id, name, timezone, region, external_id |
-| `baseline_dates` | `list[str]` | ISO dates for same-weekday baseline (past 8 weeks) |
-| `daily_product_sales` | `list[dict]` | Columns: date, location_id, machine_id, product_id, currency, cash_type, units_sold |
-| `revenue` | `list[dict]` | Columns: date, product_id, cash_type, currency, tx_count, revenue |
-| `ingredient_use` | `list[dict]` | Columns: date, machine_id, ingredient_id, quantity_consumed, unit |
-| `price_discrepancies` | `list[dict]` | Columns: date, product_id, cash_type, amount, expected_price, delta |
-| `product_forecasts` | `list[dict]` | Columns: forecast_date, product_id, forecast_units, model_name |
-| `ingredient_forecasts` | `list[dict]` | Columns: forecast_date, ingredient_id, forecast_quantity, unit, model_name |
-| `hourly_product_sales` | `list[dict]` | Columns: date, hour_of_day, product_id, units_sold |
-| `cash_mix` | `list[dict]` | Columns: date, cash_type, units, revenue |
-| `daily_totals` | `list[dict]` | Columns: date, units_total, revenue_total, card_share |
+| `ctx` | `dict` | The full hierarchical script context (see below) |
+
+### `ctx` shape (high-level)
+
+- `ctx["meta"]`: `{{"as_of_date": "YYYY-MM-DD", "currency": "USD", "run_id": str | None}}`
+- `ctx["ids"]`: `{{"location_id": int, "machine_id": int}}`
+- `ctx["entities"]`:
+  - `ctx["entities"]["location"]`: location metadata dict
+  - `ctx["entities"]["machine"]`: machine metadata dict
+- `ctx["days"]`: list of day objects (past observed + future predicted)
+  - shared fields: `{{"kind": "observed"|"predicted", "date": "YYYY-MM-DD", "offset_days": int}}`
+  - observed fields:
+    - `totals`: `{{"units": float, "revenue": float, "card_share": float | None}}`
+    - `by_product`: `[{{"product_id": int, "product_name": str, "units": float, "revenue": float}}]`
+    - `by_ingredient`: `[{{"ingredient_id": int, "ingredient_name": str, "qty": float, "unit": str}}]`
+  - predicted fields:
+    - `by_product`: `[{{"product_id": int, "product_name": str, "units": float}}]`
+    - `by_ingredient`: `[{{"ingredient_id": int, "ingredient_name": str, "qty": float, "unit": str}}]`
+- `ctx["inventory"]`:
+  - `snapshot_date`: `"YYYY-MM-DD" | None`
+  - `by_ingredient`: `[{{"ingredient_id": int, "ingredient_name": str, "qty_on_hand": float, "unit": str, "capacity": float | None, "capacity_unit": str | None}}]`
+- `ctx["price_anomalies"]`:
+  - `[{{"product_id": int, "product_name": str | None, "undercharge_count": int, "examples": list[dict]}}]`
 
 ## Available helper functions
 
@@ -51,28 +58,34 @@ LOW, MEDIUM, HIGH, CRITICAL
 - Set `result` to a `list` of alert dicts (empty list = no alert)
 - Max 100 lines
 - Use only the variables and functions listed above
+- Prefer small local constants and simple percent/mean comparisons
 
 ## Example script
 
 ```python
-# Detect machine-level sales drops vs same-weekday baseline.
-today = [d for d in daily_totals if d["date"] == as_of_date]
-if not today:
+# Detect machine-level sales drop vs recent observed mean.
+as_of = ctx["meta"]["as_of_date"]
+days = ctx.get("days", [])
+obs = [d for d in days if d.get("kind") == "observed"]
+today = [d for d in obs if d.get("date") == as_of]
+baseline = [d for d in obs if d.get("date") != as_of and d.get("totals")]
+
+if not today or not baseline:
     result = []
 else:
-    today_units = today[0]["units_total"]
-    bl_units = [d["units_total"] for d in daily_totals if d["date"] in baseline_dates]
-    units_z = z_score(today_units, bl_units)
-
-    if units_z > -2.0:
+    today_units = float(today[0]["totals"].get("units") or 0.0)
+    bl_units = [float(d["totals"].get("units") or 0.0) for d in baseline]
+    bl_mean = mean(bl_units)
+    drop_pct = (today_units - bl_mean) / bl_mean if bl_mean > 0 else 0.0
+    if drop_pct > -0.30:
         result = []
     else:
         result = [alert(
             "machine_dropoff", "HIGH",
-            "Machine-level dropoff vs baseline",
-            "Sales fell materially vs same-weekday baseline.",
-            {{"units_z": round(units_z, 2)}},
-            [("CHECK_MACHINE", {{"machine_id": machine_id}})]
+            "Machine-level dropoff vs recent mean",
+            "Units fell materially vs the recent observed mean.",
+            {{"today_units": today_units, "baseline_mean": round(bl_mean, 2), "drop_pct": round(drop_pct * 100, 1)}},
+            [("CHECK_MACHINE", {{"machine_id": ctx["ids"]["machine_id"]}})]
         )]
 ```
 

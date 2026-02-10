@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
 from pathlib import Path
 
 import uvicorn
@@ -11,52 +10,58 @@ from loguru import logger
 load_dotenv()
 
 from .api import create_app
-from .demo_data import inject_synthetic_week
 from .engine import DailyAlertEngine
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Daily alert engine")
-    parser.add_argument("--data-db", default="coffee.db", help="Path to data SQLite DB (read-only)")
-    parser.add_argument("--state-db", default="agent.db", help="Path to agent state SQLite DB")
-    # Keep --db as hidden alias for backwards compat
-    parser.add_argument("--db", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--db-dir",
+        default=None,
+        help="Directory containing vending SQLite DBs (defaults to database-builder/db)",
+    )
+    parser.add_argument(
+        "--state-db", default="agent.db", help="Path to agent state SQLite DB"
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run-current")
     sub.add_parser("advance")
-
-    inject = sub.add_parser("inject-demo-week")
-    inject.add_argument("--start-day", required=True)
+    sub.add_parser("startover")
 
     api = sub.add_parser("serve")
     api.add_argument("--host", default="127.0.0.1")
     api.add_argument("--port", type=int, default=8000)
+    api.add_argument(
+        "--startover",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reset agent state on server launch (default: true).",
+    )
 
     gen = sub.add_parser("generate-script")
-    gen.add_argument("description", help="Natural language description of the alert script to generate")
-    gen.add_argument("--output-dir", default=None, help="Directory to save generated script")
+    gen.add_argument(
+        "description",
+        help="Natural language description of the alert script to generate",
+    )
+    gen.add_argument(
+        "--output-dir", default=None, help="Directory to save generated script"
+    )
 
     return parser
 
 
-def _resolve_db_paths(args: argparse.Namespace) -> tuple[str, str]:
-    """Return (data_db, state_db) respecting --db legacy alias."""
-    data_db = args.data_db
-    state_db = args.state_db
-    if args.db is not None:
-        data_db = args.db
-    return data_db, state_db
-
-
 def main() -> int:
     args = build_parser().parse_args()
-    data_db, state_db = _resolve_db_paths(args)
 
     if args.command == "serve":
         uvicorn.run(
-            create_app(data_db=data_db, state_db=state_db),
+            create_app(
+                db_dir=args.db_dir,
+                state_db=args.state_db,
+                startover_on_launch=args.startover,
+            ),
             host=args.host,
             port=args.port,
         )
@@ -65,13 +70,10 @@ def main() -> int:
     if args.command == "generate-script":
         return _generate_script(args)
 
-    if args.command == "inject-demo-week":
-        start_day = date.fromisoformat(args.start_day)
-        inserted = inject_synthetic_week(db_path=data_db, start_day=start_day)
-        logger.info("inserted_rows={}", inserted)
-        return 0
-
-    engine = DailyAlertEngine(data_db=data_db, state_db=state_db)
+    engine = DailyAlertEngine(
+        db_dir=args.db_dir,
+        state_db=args.state_db,
+    )
 
     if args.command == "run-current":
         summary = engine.run_current_day()
@@ -81,6 +83,11 @@ def main() -> int:
     if args.command == "advance":
         result = engine.advance_day()
         logger.info("{}", result)
+        return 0
+
+    if args.command == "startover":
+        state = engine.reset_state()
+        logger.info("{}", state)
         return 0
 
     return 1
@@ -93,7 +100,7 @@ def _generate_script(args: argparse.Namespace) -> int:
     prompt = build_generation_prompt(args.description)
 
     try:
-        import litellm
+        import litellm  # ty: ignore[unresolved-import]
     except ImportError:
         logger.error("litellm is required for script generation: uv add litellm")
         return 1

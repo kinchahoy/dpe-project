@@ -1,10 +1,10 @@
 # Vending machine DB layout (3 SQLite files)
 
-This repo builds three SQLite databases for a vending machine tracker + simulator (stored under `artifacts/`):
+This repo builds three SQLite databases for a vending machine tracker + simulator (stored under `../db/`):
 
-- `artifacts/vending_machine_facts.db`: **hard facts** (stable dimensions + capacities + recipes)
-- `artifacts/vending_sales_observed.db`: **ingested reality** (transactions + day-level observed rollups)
-- `artifacts/vending_analysis.db`: **ephemeral simulation** (per-run scenario tables + alerts + derived artifacts)
+- `../db/vending_machine_facts.db`: **hard facts** (stable dimensions + capacities + recipes)
+- `../db/vending_sales_observed.db`: **ingested reality** (transactions + day-level observed rollups)
+- `../db/vending_analysis.db`: **ephemeral simulation** (per-run scenario tables + alerts + derived artifacts)
 
 Run `python init_db.py` to rebuild all three from the `index_*.csv` inputs (and the repo’s fact files).
 
@@ -76,16 +76,12 @@ Every simulation run is anchored by a **seed window** (currently the last 30 day
 - `sim_daily_ingredient_projection`
   - ingredient forecasts derived from `sim_daily_projection` totals + observed ingredient rates
 
-### Inventory state + events (per run)
+### Inventory (interactive app)
 
-- `sim_inventory_day_start`
-  - start-of-day on-hand quantities by `(run_id, date, machine_id, ingredient_id)`
-- `sim_refill_event`
-  - refill events by `(run_id, occurred_at, machine_id, ingredient_id)`
-
-These tables are where the simulator writes:
-- start-of-day inventory after prior-day drawdown
-- refills that occur during the run
+Inventory for the interactive manager UI is not stored in `vending_analysis.db`.
+It is maintained by the agent app in its own state DB (agent-owned tables), and is
+manager-controlled during the simulation (restocks only happen when triggered via
+the UI).
 
 ### Alerts (per run)
 

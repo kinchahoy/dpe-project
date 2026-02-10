@@ -5,7 +5,8 @@ from datetime import date, timedelta
 from typing import Any
 
 import pydantic_monty
-from loguru import logger
+
+from .script_context import SCRIPT_CONTEXT_INPUT_NAMES, normalize_script_context
 
 
 class ScriptExecutionError(RuntimeError):
@@ -13,6 +14,7 @@ class ScriptExecutionError(RuntimeError):
 
 
 # ── external helper functions provided to every script ──────────────
+
 
 def _alert(
     alert_type: str,
@@ -30,8 +32,7 @@ def _alert(
         "summary": summary,
         "evidence": evidence,
         "recommended_actions": [
-            {"action_type": a[0], "params": a[1]} if isinstance(a, (list, tuple))
-            else a
+            {"action_type": a[0], "params": a[1]} if isinstance(a, (list, tuple)) else a
             for a in (actions or [])
         ][:3],
     }
@@ -86,46 +87,35 @@ EXTERNAL_FUNCTIONS: dict[str, Any] = {
     "date_add": _date_add,
 }
 
-# Names that scripts receive as input variables
-INPUT_NAMES: list[str] = [
-    "as_of_date",
-    "location_id",
-    "machine_id",
-    "currency",
-    "machine",
-    "location",
-    "baseline_dates",
-    "daily_product_sales",
-    "revenue",
-    "ingredient_use",
-    "price_discrepancies",
-    "product_forecasts",
-    "ingredient_forecasts",
-    "hourly_product_sales",
-    "cash_mix",
-    "daily_totals",
-]
-
 
 def run_script(
     *,
     script_name: str,
     code: str,
     context: dict[str, Any],
-    timeout_seconds: int = 8,
 ) -> list[dict[str, Any]]:
     """Execute an alert script in the Monty sandbox and return emitted alerts."""
+    normalized_context = normalize_script_context(context)
+    ctx = (
+        normalized_context.get("ctx") if isinstance(normalized_context, dict) else None
+    )
+    ids = ctx.get("ids") if isinstance(ctx, dict) else {}
+    default_location_id = (
+        int(ids.get("location_id") or 0) if isinstance(ids, dict) else 0
+    )
+    default_machine_id = int(ids.get("machine_id") or 0) if isinstance(ids, dict) else 0
+
     # Append bare `result` so Monty returns the variable as the last expression
     full_code = code.rstrip() + "\nresult\n"
     try:
         m = pydantic_monty.Monty(
             full_code,
-            inputs=INPUT_NAMES,
+            inputs=SCRIPT_CONTEXT_INPUT_NAMES,
             external_functions=list(EXTERNAL_FUNCTIONS.keys()),
             script_name=f"{script_name}.py",
         )
         output = m.run(
-            inputs=context,
+            inputs=normalized_context,
             external_functions=EXTERNAL_FUNCTIONS,
         )
     except Exception as exc:
@@ -140,6 +130,6 @@ def run_script(
             raise ScriptExecutionError(
                 f"{script_name}: each alert must be a dict, got {type(item).__name__}"
             )
-        item.setdefault("location_id", context["location_id"])
-        item.setdefault("machine_id", context["machine_id"])
+        item.setdefault("location_id", default_location_id)
+        item.setdefault("machine_id", default_machine_id)
     return output

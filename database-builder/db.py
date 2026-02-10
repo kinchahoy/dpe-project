@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import MetaData, text
 from sqlmodel import Field, SQLModel, create_engine
 
-ARTIFACTS_DIR = Path("artifacts")
+ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "db"
 
 FACTS_DB_FILE = ARTIFACTS_DIR / "vending_machine_facts.db"
 OBSERVED_DB_FILE = ARTIFACTS_DIR / "vending_sales_observed.db"
@@ -168,32 +168,6 @@ class SimTransactionExpanded(SimBase, table=True):
     currency: str = Field(index=True)
     source_file: Optional[str] = None
     source_row: int
-
-
-class SimInventoryDayStart(SimBase, table=True):
-    __tablename__ = "sim_inventory_day_start"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    run_id: str = Field(foreign_key="sim_run.id", index=True)
-    date: Date = Field(index=True)
-    machine_id: int = Field(index=True)
-    ingredient_id: int = Field(index=True)
-    quantity_on_hand: float
-    unit: str
-
-
-class SimRefillEvent(SimBase, table=True):
-    __tablename__ = "sim_refill_event"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    run_id: str = Field(foreign_key="sim_run.id", index=True)
-    occurred_at: datetime = Field(index=True)
-    date: Date = Field(index=True)
-    machine_id: int = Field(index=True)
-    ingredient_id: int = Field(index=True)
-    quantity_added: float
-    unit: str
-    reason: str = ""
 
 
 class SimAlert(SimBase, table=True):

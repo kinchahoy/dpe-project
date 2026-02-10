@@ -262,9 +262,7 @@ def _(alt, currency, daily_price, mo, pl, sustained_eras):
 
     _transitions = []
     for _p in _products_with_changes:
-        _p_eras = sustained_eras.filter(pl.col("product_name") == _p).sort(
-            "start_date"
-        )
+        _p_eras = sustained_eras.filter(pl.col("product_name") == _p).sort("start_date")
         _prices = _p_eras["era_price"].to_list()
         _dates = _p_eras["start_date"].to_list()
         for i in range(1, len(_prices)):
@@ -275,9 +273,7 @@ def _(alt, currency, daily_price, mo, pl, sustained_eras):
                     "old_price": _prices[i - 1],
                     "new_price": _prices[i],
                     "change": _prices[i] - _prices[i - 1],
-                    "change_pct": (_prices[i] - _prices[i - 1])
-                    / _prices[i - 1]
-                    * 100,
+                    "change_pct": (_prices[i] - _prices[i - 1]) / _prices[i - 1] * 100,
                 }
             )
 
@@ -380,9 +376,7 @@ def _(card_df, loc_df, pl, sustained_eras):
 
     _expected_rows = []
     for _p in _products:
-        _p_eras = sustained_eras.filter(pl.col("product_name") == _p).sort(
-            "start_date"
-        )
+        _p_eras = sustained_eras.filter(pl.col("product_name") == _p).sort("start_date")
         _p_txns = card_df.filter(pl.col("product_name") == _p)
         _dates = _p_txns["date"].unique().sort().to_list()
 
@@ -502,8 +496,7 @@ def _(alt, card_df, currency, expected_lookup, mo, pl):
     # Only show products that had anomalies
     _products_with_anomalies = (
         _daily.filter(
-            (pl.col("actual_avg") - pl.col("expected")).abs()
-            / pl.col("expected")
+            (pl.col("actual_avg") - pl.col("expected")).abs() / pl.col("expected")
             > 0.005
         )["product_name"]
         .unique()
@@ -550,9 +543,7 @@ def _(alt, card_df, currency, expected_lookup, mo, pl):
                 columns=2,
             )
             .resolve_scale(y="independent")
-            .properties(
-                title="Actual (dots) vs Expected (line) Price Over Time"
-            )
+            .properties(title="Actual (dots) vs Expected (line) Price Over Time")
         )
         mo.ui.altair_chart(_chart, chart_selection=False, legend_selection=False)
     return
@@ -564,7 +555,9 @@ def _(blip_eras, card_anomalies, currency, loc_df, mo, pl):
     _n_anomalies = card_anomalies.height
     _pct = _n_anomalies / _total_card * 100 if _total_card > 0 else 0
 
-    _blip_products = blip_eras["product_name"].unique().to_list() if blip_eras.height > 0 else []
+    _blip_products = (
+        blip_eras["product_name"].unique().to_list() if blip_eras.height > 0 else []
+    )
 
     _anomaly_by_product = (
         card_anomalies.group_by("product_name")
@@ -585,8 +578,8 @@ def _(blip_eras, card_anomalies, currency, loc_df, mo, pl):
             **Anomaly Summary:**
 
             - **{_n_anomalies}** of **{_total_card:,}** card transactions ({_pct:.1f}%) priced differently than expected
-            - Products with short-lived price blips: {', '.join(_blip_products) if _blip_products else 'none'}
-            - Top anomalous products: {'; '.join(_top_offenders) if _top_offenders else 'none'}
+            - Products with short-lived price blips: {", ".join(_blip_products) if _blip_products else "none"}
+            - Top anomalous products: {"; ".join(_top_offenders) if _top_offenders else "none"}
             - Action: investigate whether anomalies reflect machine misconfiguration or intentional promotions
             """
         ),
@@ -637,9 +630,7 @@ def _(loc_df, pl):
         _pivot.filter(pl.col("cash").is_not_null() & pl.col("card").is_not_null())
         .with_columns(
             (pl.col("cash") - pl.col("card")).round(2).alias("cash_premium"),
-            ((pl.col("cash") / pl.col("card") - 1) * 100)
-            .round(2)
-            .alias("premium_pct"),
+            ((pl.col("cash") / pl.col("card") - 1) * 100).round(2).alias("premium_pct"),
         )
         .sort("product_name", "week")
     )
@@ -767,7 +758,11 @@ def _(alt, currency, mo, pl, premium_stats):
                 tooltip=[
                     "product_name",
                     alt.Tooltip("avg_premium_pct:Q", format="+.1f"),
-                    alt.Tooltip("avg_abs_premium:Q", format="+.2f", title=f"Avg Abs ({currency})"),
+                    alt.Tooltip(
+                        "avg_abs_premium:Q",
+                        format="+.2f",
+                        title=f"Avg Abs ({currency})",
+                    ),
                     "n_weeks",
                 ],
             )
@@ -798,9 +793,15 @@ def _(cash_card_comparison, currency, mo, pl, premium_stats):
     )
     _negative_premium = premium_stats.filter(pl.col("avg_premium_pct") < -0.5)
 
-    _high_names = _high_premium["product_name"].to_list() if _high_premium.height > 0 else []
+    _high_names = (
+        _high_premium["product_name"].to_list() if _high_premium.height > 0 else []
+    )
     _no_names = _no_premium["product_name"].to_list() if _no_premium.height > 0 else []
-    _neg_names = _negative_premium["product_name"].to_list() if _negative_premium.height > 0 else []
+    _neg_names = (
+        _negative_premium["product_name"].to_list()
+        if _negative_premium.height > 0
+        else []
+    )
 
     _is_fixed = _overall_std is not None and _overall_std < 2.0
 
@@ -812,9 +813,9 @@ def _(cash_card_comparison, currency, mo, pl, premium_stats):
             - **Overall cash premium**: avg **{_overall_avg:+.1f}%**, median **{_overall_median:+.1f}%** (std: {_overall_std:.1f}%)
             - Cash higher in **{_positive}** / {_total} product-weeks, same in **{_zero}**, lower in **{_negative}**
             - {"Cash premium appears **consistent** across products (low variance) — suggests a fixed CC fee markup" if _is_fixed else "Cash premium **varies** across products — not a simple fixed percentage"}
-            - Products with >2% cash premium: {', '.join(_high_names) if _high_names else 'none'}
-            - Products with no premium (same price): {', '.join(_no_names) if _no_names else 'none'}
-            - Products where card is *more* expensive: {', '.join(_neg_names) if _neg_names else 'none'}
+            - Products with >2% cash premium: {", ".join(_high_names) if _high_names else "none"}
+            - Products with no premium (same price): {", ".join(_no_names) if _no_names else "none"}
+            - Products where card is *more* expensive: {", ".join(_neg_names) if _neg_names else "none"}
             """
         ),
         kind="info",
@@ -858,7 +859,11 @@ def _(loc_df, pl):
 
     _scores = loc_df.select("amount", "cash_type").to_dicts()
     _classified = [
-        {"amount": r["amount"], "cash_type": r["cash_type"], "roundness": roundness_score(r["amount"])}
+        {
+            "amount": r["amount"],
+            "cash_type": r["cash_type"],
+            "roundness": roundness_score(r["amount"]),
+        }
         for r in _scores
     ]
     roundness_df = pl.DataFrame(_classified)
@@ -894,7 +899,12 @@ def _(alt, mo, roundness_summary):
                     range=["#2ca02c", "#98df8a", "#ffbb78", "#d62728"],
                 ),
             ),
-            tooltip=["cash_type", "roundness", "count", alt.Tooltip("pct:Q", format=".1f")],
+            tooltip=[
+                "cash_type",
+                "roundness",
+                "count",
+                alt.Tooltip("pct:Q", format=".1f"),
+            ],
         )
         .properties(
             title="Price Roundness: Cash vs Card",
@@ -919,19 +929,21 @@ def _(cash_card_comparison, currency, mo, pl):
         rounded_up_whole = math.ceil(card_price)
         rounded_up_5 = math.ceil(card_price / 5) * 5
 
-        _analysis.append({
-            "product_name": r["product_name"],
-            "week": r["week"],
-            "card_price": card_price,
-            "cash_price": cash_price,
-            "ceil_whole": rounded_up_whole,
-            "ceil_5": rounded_up_5,
-            "cash_eq_ceil_whole": cash_price == rounded_up_whole,
-            "cash_eq_ceil_5": cash_price == rounded_up_5,
-            "card_already_round": card_price == int(card_price),
-            "cash_is_round": cash_price == int(cash_price),
-            "premium_pct": r["premium_pct"],
-        })
+        _analysis.append(
+            {
+                "product_name": r["product_name"],
+                "week": r["week"],
+                "card_price": card_price,
+                "cash_price": cash_price,
+                "ceil_whole": rounded_up_whole,
+                "ceil_5": rounded_up_5,
+                "cash_eq_ceil_whole": cash_price == rounded_up_whole,
+                "cash_eq_ceil_5": cash_price == rounded_up_5,
+                "card_already_round": card_price == int(card_price),
+                "cash_is_round": cash_price == int(cash_price),
+                "premium_pct": r["premium_pct"],
+            }
+        )
 
     rounding_analysis = pl.DataFrame(_analysis)
 
@@ -945,18 +957,22 @@ def _(cash_card_comparison, currency, mo, pl):
     _already_round = rounding_analysis.filter(pl.col("card_already_round"))
     _not_round = rounding_analysis.filter(~pl.col("card_already_round"))
 
-    _round_avg_premium = _already_round["premium_pct"].mean() if _already_round.height > 0 else 0
-    _nonround_avg_premium = _not_round["premium_pct"].mean() if _not_round.height > 0 else 0
+    _round_avg_premium = (
+        _already_round["premium_pct"].mean() if _already_round.height > 0 else 0
+    )
+    _nonround_avg_premium = (
+        _not_round["premium_pct"].mean() if _not_round.height > 0 else 0
+    )
 
     mo.md(f"""
     ### Rounding Pattern Analysis ({currency})
 
     | Test | Result |
     |------|--------|
-    | Cash = ceil(card) to whole number | **{_n_ceil_whole}** / {_total} ({_n_ceil_whole/_total*100:.0f}%) |
-    | Cash = ceil(card) to nearest 5 | **{_n_ceil_5}** / {_total} ({_n_ceil_5/_total*100:.0f}%) |
-    | Card price already a whole number | **{_n_card_round}** / {_total} ({_n_card_round/_total*100:.0f}%) |
-    | Cash price is a whole number | **{_n_cash_round}** / {_total} ({_n_cash_round/_total*100:.0f}%) |
+    | Cash = ceil(card) to whole number | **{_n_ceil_whole}** / {_total} ({_n_ceil_whole / _total * 100:.0f}%) |
+    | Cash = ceil(card) to nearest 5 | **{_n_ceil_5}** / {_total} ({_n_ceil_5 / _total * 100:.0f}%) |
+    | Card price already a whole number | **{_n_card_round}** / {_total} ({_n_card_round / _total * 100:.0f}%) |
+    | Cash price is a whole number | **{_n_cash_round}** / {_total} ({_n_cash_round / _total * 100:.0f}%) |
     | Avg premium when card already round | **{_round_avg_premium:+.1f}%** (n={_already_round.height}) |
     | Avg premium when card is fractional | **{_nonround_avg_premium:+.1f}%** (n={_not_round.height}) |
     """)
@@ -1019,18 +1035,26 @@ def _(mo, pl, rounding_analysis):
     _already_round = rounding_analysis.filter(pl.col("card_already_round"))
     _not_round = rounding_analysis.filter(~pl.col("card_already_round"))
 
-    _round_avg = _already_round["premium_pct"].mean() if _already_round.height > 0 else 0
+    _round_avg = (
+        _already_round["premium_pct"].mean() if _already_round.height > 0 else 0
+    )
     _nonround_avg = _not_round["premium_pct"].mean() if _not_round.height > 0 else 0
 
     # When card is round AND cash matches card (same price)
-    _round_same = _already_round.filter(pl.col("premium_pct").abs() < 0.1).height if _already_round.height > 0 else 0
+    _round_same = (
+        _already_round.filter(pl.col("premium_pct").abs() < 0.1).height
+        if _already_round.height > 0
+        else 0
+    )
 
     _ceil_match_pct = _n_ceil_whole / _total * 100 if _total > 0 else 0
     _cash_round_pct = _n_cash_round / _total * 100 if _total > 0 else 0
 
     _hypothesis = (
-        "**SUPPORTED**" if _ceil_match_pct > 50 and abs(_nonround_avg) > abs(_round_avg) * 2
-        else "**PARTIALLY SUPPORTED**" if _ceil_match_pct > 30 or _cash_round_pct > 80
+        "**SUPPORTED**"
+        if _ceil_match_pct > 50 and abs(_nonround_avg) > abs(_round_avg) * 2
+        else "**PARTIALLY SUPPORTED**"
+        if _ceil_match_pct > 30 or _cash_round_pct > 80
         else "**NOT SUPPORTED**"
     )
 

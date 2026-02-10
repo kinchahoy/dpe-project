@@ -39,8 +39,9 @@ def _(pl, sqlite3):
     # Schema: see db.py for Transaction, Product, Ingredient, ProductIngredient, Location, Machine
     _conn = sqlite3.connect("coffee.db")
 
-    df = pl.read_database(
-        """
+    df = (
+        pl.read_database(
+            """
         SELECT
             t.id as txn_id, t.date, t.occurred_at,
             t.cash_type, t.card_token, t.amount, t.currency,
@@ -54,14 +55,19 @@ def _(pl, sqlite3):
         JOIN machine m ON m.id = t.machine_id
         ORDER BY t.occurred_at
         """,
-        _conn,
-    ).with_columns(
-        pl.col("date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
-        pl.col("occurred_at").cast(pl.Utf8).str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False),
-    ).with_columns(
-        pl.col("occurred_at").dt.hour().alias("hour"),
-        pl.col("occurred_at").dt.weekday().alias("weekday"),
-        pl.col("occurred_at").dt.month().alias("month"),
+            _conn,
+        )
+        .with_columns(
+            pl.col("date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
+            pl.col("occurred_at")
+            .cast(pl.Utf8)
+            .str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False),
+        )
+        .with_columns(
+            pl.col("occurred_at").dt.hour().alias("hour"),
+            pl.col("occurred_at").dt.weekday().alias("weekday"),
+            pl.col("occurred_at").dt.month().alias("month"),
+        )
     )
 
     recipe_df = pl.read_database(
@@ -107,7 +113,9 @@ def _(currency, loc_df, mo, pl):
     _date_max = loc_df["date"].max()
     _total_rev = loc_df["amount"].sum()
     _avg_ticket = _total_rev / _n if _n > 0 else 0
-    _card_pct = loc_df.filter(pl.col("cash_type") == "card").height / _n * 100 if _n > 0 else 0
+    _card_pct = (
+        loc_df.filter(pl.col("cash_type") == "card").height / _n * 100 if _n > 0 else 0
+    )
     _machines = loc_df["machine_name"].unique().sort().to_list()
 
     mo.md(
@@ -117,7 +125,7 @@ def _(currency, loc_df, mo, pl):
         | Metric | Value |
         |--------|-------|
         | Total transactions | **{_n:,}** |
-        | Machines | **{', '.join(_machines)}** |
+        | Machines | **{", ".join(_machines)}** |
         | Date range | **{_date_min}** to **{_date_max}** |
         | Total revenue | **{_total_rev:,.2f} {currency}** |
         | Avg ticket | **{_avg_ticket:.2f} {currency}** |
@@ -162,10 +170,16 @@ def _(alt, currency, loc_df, mo, pl):
         .encode(
             x=alt.X("product_name:N", sort="-y", title="Product"),
             y=alt.Y("volume:Q", title="Transaction Count"),
-            color=alt.Color("revenue:Q", scale=alt.Scale(scheme="goldorange"), title=f"Revenue ({currency})"),
+            color=alt.Color(
+                "revenue:Q",
+                scale=alt.Scale(scheme="goldorange"),
+                title=f"Revenue ({currency})",
+            ),
             tooltip=["product_name", "volume", alt.Tooltip("revenue:Q", format=",.2f")],
         )
-        .properties(title="Product Popularity (Volume & Revenue)", width=600, height=350)
+        .properties(
+            title="Product Popularity (Volume & Revenue)", width=600, height=350
+        )
     )
     mo.ui.altair_chart(_chart)
     return
@@ -181,10 +195,16 @@ def _(alt, loc_df, mo, pl):
         .encode(
             x=alt.X("hour:O", title="Hour of Day"),
             y=alt.Y("product_name:N", title="Product"),
-            color=alt.Color("count:Q", scale=alt.Scale(scheme="blues"), title="Transactions"),
+            color=alt.Color(
+                "count:Q", scale=alt.Scale(scheme="blues"), title="Transactions"
+            ),
             tooltip=["product_name", "hour", "count"],
         )
-        .properties(title="Demand Heatmap: Product x Hour (Stockout Risk Windows)", width=600, height=400)
+        .properties(
+            title="Demand Heatmap: Product x Hour (Stockout Risk Windows)",
+            width=600,
+            height=400,
+        )
     )
     mo.ui.altair_chart(_heatmap)
     return
@@ -196,7 +216,11 @@ def _(alt, loc_df, mo, pl):
     _dow_data = (
         loc_df.group_by("weekday")
         .agg(pl.len().alias("volume"))
-        .with_columns(pl.col("weekday").replace_strict(_dow_labels, return_dtype=pl.Utf8).alias("day_name"))
+        .with_columns(
+            pl.col("weekday")
+            .replace_strict(_dow_labels, return_dtype=pl.Utf8)
+            .alias("day_name")
+        )
         .sort("weekday")
     )
 
@@ -206,7 +230,9 @@ def _(alt, loc_df, mo, pl):
         .encode(
             x=alt.X("day_name:N", sort=list(_dow_labels.values()), title="Day of Week"),
             y=alt.Y("volume:Q", title="Transaction Count"),
-            color=alt.Color("volume:Q", scale=alt.Scale(scheme="tealblues"), legend=None),
+            color=alt.Color(
+                "volume:Q", scale=alt.Scale(scheme="tealblues"), legend=None
+            ),
             tooltip=["day_name", "volume"],
         )
         .properties(title="Transaction Volume by Day of Week", width=500, height=300)
@@ -238,9 +264,9 @@ def _(loc_df, mo, pl):
             f"""
             **Inventory Recommendations:**
 
-            - **Top sellers** (keep fully stocked): {', '.join(_top3)}
-            - **Low movers** (reduce inventory): {', '.join(_bottom3)}
-            - **Peak restock hours**: {', '.join(str(h) + ':00' for h in sorted(_peak_hours))}
+            - **Top sellers** (keep fully stocked): {", ".join(_top3)}
+            - **Low movers** (reduce inventory): {", ".join(_bottom3)}
+            - **Peak restock hours**: {", ".join(str(h) + ":00" for h in sorted(_peak_hours))}
               — ensure supplies are replenished *before* these windows
             """
         ),
@@ -301,7 +327,9 @@ def _(alt, coffee_dropdown, currency, loc_df, mo, pl):
     _combined = (
         alt.layer(_bars, _line)
         .resolve_scale(y="independent")
-        .properties(title=f"{_selected}: Avg Price vs Volume by Hour", width=600, height=350)
+        .properties(
+            title=f"{_selected}: Avg Price vs Volume by Hour", width=600, height=350
+        )
     )
     mo.ui.altair_chart(_combined)
     return
@@ -314,7 +342,9 @@ def _(alt, currency, loc_df, mo, pl):
         .agg(pl.col("amount").sum().alias("revenue"))
         .sort("revenue", descending=True)
         .with_columns(
-            (pl.col("revenue").cum_sum() / pl.col("revenue").sum() * 100).alias("cumulative_pct")
+            (pl.col("revenue").cum_sum() / pl.col("revenue").sum() * 100).alias(
+                "cumulative_pct"
+            )
         )
     )
 
@@ -329,7 +359,11 @@ def _(alt, currency, loc_df, mo, pl):
                 alt.value("#5276A7"),
                 alt.value("#CCCCCC"),
             ),
-            tooltip=["product_name", alt.Tooltip("revenue:Q", format=",.2f"), alt.Tooltip("cumulative_pct:Q", format=".1f")],
+            tooltip=[
+                "product_name",
+                alt.Tooltip("revenue:Q", format=",.2f"),
+                alt.Tooltip("cumulative_pct:Q", format=".1f"),
+            ],
         )
     )
 
@@ -338,12 +372,18 @@ def _(alt, currency, loc_df, mo, pl):
         .mark_line(color="#F18727", strokeWidth=2, point=True)
         .encode(
             x=alt.X("product_name:N", sort="-y"),
-            y=alt.Y("cumulative_pct:Q", title="Cumulative %", scale=alt.Scale(domain=[0, 100])),
+            y=alt.Y(
+                "cumulative_pct:Q",
+                title="Cumulative %",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
             tooltip=["product_name", alt.Tooltip("cumulative_pct:Q", format=".1f")],
         )
     )
 
-    _rule = alt.Chart().mark_rule(color="red", strokeDash=[4, 4]).encode(y=alt.datum(80))
+    _rule = (
+        alt.Chart().mark_rule(color="red", strokeDash=[4, 4]).encode(y=alt.datum(80))
+    )
 
     _chart = (
         alt.layer(_bars, _line, _rule)
@@ -359,7 +399,9 @@ def _(currency, loc_df, mo, pl):
     _rev_share = (
         loc_df.group_by("product_name")
         .agg(pl.col("amount").sum().alias("revenue"))
-        .with_columns((pl.col("revenue") / pl.col("revenue").sum() * 100).alias("share"))
+        .with_columns(
+            (pl.col("revenue") / pl.col("revenue").sum() * 100).alias("share")
+        )
         .sort("share", descending=True)
     )
     _top = _rev_share.head(1)
@@ -377,7 +419,7 @@ def _(currency, loc_df, mo, pl):
             **Pricing Recommendations:**
 
             - **{_top_name}** dominates with **{_top_share:.1f}%** of revenue — protect this product's pricing
-            - Core 80% revenue products: {', '.join(_core_products)} — focus pricing experiments here
+            - Core 80% revenue products: {", ".join(_core_products)} — focus pricing experiments here
             - Consider time-of-day pricing: premium during peak hours, discounts during low-volume periods
             - Currency: all amounts in **{currency}**
             """
@@ -441,14 +483,19 @@ def _(alt, coffee_dropdown, currency, loc_df, mo, pl, product_expected):
             x=alt.X("date:T", title="Date"),
             y=alt.Y("avg_price:Q", title=f"Daily Avg Price ({currency})"),
             color=alt.condition(
-                (alt.datum.avg_price > _exp_price * 1.01) | (alt.datum.avg_price < _exp_price * 0.99),
+                (alt.datum.avg_price > _exp_price * 1.01)
+                | (alt.datum.avg_price < _exp_price * 0.99),
                 alt.value("#E45756"),
                 alt.value("#5276A7"),
             ),
             size=alt.Size("n_txns:Q", title="# Transactions"),
-            tooltip=["date:T", alt.Tooltip("avg_price:Q", format=",.2f"),
-                      alt.Tooltip("min_price:Q", format=",.2f"),
-                      alt.Tooltip("max_price:Q", format=",.2f"), "n_txns"],
+            tooltip=[
+                "date:T",
+                alt.Tooltip("avg_price:Q", format=",.2f"),
+                alt.Tooltip("min_price:Q", format=",.2f"),
+                alt.Tooltip("max_price:Q", format=",.2f"),
+                "n_txns",
+            ],
         )
     )
 
@@ -458,12 +505,10 @@ def _(alt, coffee_dropdown, currency, loc_df, mo, pl, product_expected):
         .encode(y=alt.datum(_exp_price))
     )
 
-    _chart = (
-        alt.layer(_points, _rule)
-        .properties(
-            title=f"{_selected}: Daily Avg Price vs Expected ({_exp_price:,.2f} {currency})",
-            width=700, height=300,
-        )
+    _chart = alt.layer(_points, _rule).properties(
+        title=f"{_selected}: Daily Avg Price vs Expected ({_exp_price:,.2f} {currency})",
+        width=700,
+        height=300,
     )
     mo.ui.altair_chart(_chart)
     return
@@ -475,21 +520,40 @@ def _(currency, loc_df, mo, pl, product_expected):
     price_anomalies = (
         loc_df.join(product_expected, on="product_name")
         .filter(
-            ((pl.col("amount") - pl.col("expected_price")).abs() / pl.col("expected_price")) > 0.01
+            (
+                (pl.col("amount") - pl.col("expected_price")).abs()
+                / pl.col("expected_price")
+            )
+            > 0.01
         )
         .with_columns(
-            ((pl.col("amount") - pl.col("expected_price")) / pl.col("expected_price") * 100)
+            (
+                (pl.col("amount") - pl.col("expected_price"))
+                / pl.col("expected_price")
+                * 100
+            )
             .round(1)
             .alias("deviation_pct")
         )
-        .select("date", "occurred_at", "product_name", "amount", "expected_price", "deviation_pct", "machine_name", "cash_type")
+        .select(
+            "date",
+            "occurred_at",
+            "product_name",
+            "amount",
+            "expected_price",
+            "deviation_pct",
+            "machine_name",
+            "cash_type",
+        )
         .sort("deviation_pct")
     )
 
     _n = price_anomalies.height
     _n_products = price_anomalies["product_name"].n_unique() if _n > 0 else 0
 
-    mo.md(f"### Mispriced Transactions: **{_n}** flagged across **{_n_products}** products (>{currency}1% deviation)")
+    mo.md(
+        f"### Mispriced Transactions: **{_n}** flagged across **{_n_products}** products (>{currency}1% deviation)"
+    )
     mo.ui.table(price_anomalies)
     return (price_anomalies,)
 
@@ -500,7 +564,9 @@ def _(currency, loc_df, mo, pl, price_anomalies, product_expected):
     _n_flagged = price_anomalies.height
     _pct = _n_flagged / _n_total * 100 if _n_total > 0 else 0
 
-    _products_with_issues = price_anomalies["product_name"].unique().to_list() if _n_flagged > 0 else []
+    _products_with_issues = (
+        price_anomalies["product_name"].unique().to_list() if _n_flagged > 0 else []
+    )
 
     # Show per-product distinct price counts
     _price_variety = (
@@ -517,8 +583,8 @@ def _(currency, loc_df, mo, pl, price_anomalies, product_expected):
             **Price Anomaly Findings:**
 
             - **{_n_flagged}** of **{_n_total:,}** transactions ({_pct:.1f}%) have non-standard pricing
-            - Products with multiple distinct prices: {', '.join(_multi_price_products) if _multi_price_products else 'None'}
-            - Products with flagged anomalies: {', '.join(_products_with_issues) if _products_with_issues else 'None — all prices match expected'}
+            - Products with multiple distinct prices: {", ".join(_multi_price_products) if _multi_price_products else "None"}
+            - Products with flagged anomalies: {", ".join(_products_with_issues) if _products_with_issues else "None — all prices match expected"}
             - Action: audit machine price configurations for flagged products
             """
         ),
@@ -561,7 +627,9 @@ def _(currency, loc_df, mo, pl):
 
 @app.cell
 def _(alt, currency, loc_df, mo, pl):
-    _cash_df = loc_df.filter(pl.col("cash_type") == "cash").select("occurred_at", "amount", "product_name")
+    _cash_df = loc_df.filter(pl.col("cash_type") == "cash").select(
+        "occurred_at", "amount", "product_name"
+    )
 
     _chart = (
         alt.Chart(_cash_df)
@@ -570,7 +638,11 @@ def _(alt, currency, loc_df, mo, pl):
             x=alt.X("occurred_at:T", title="Date/Time"),
             y=alt.Y("amount:Q", title=f"Amount ({currency})"),
             color=alt.Color("product_name:N", title="Product"),
-            tooltip=["occurred_at:T", alt.Tooltip("amount:Q", format=",.2f"), "product_name"],
+            tooltip=[
+                "occurred_at:T",
+                alt.Tooltip("amount:Q", format=",.2f"),
+                "product_name",
+            ],
         )
         .properties(title="Cash Transactions Over Time", width=700, height=350)
     )
@@ -589,7 +661,9 @@ def _(currency, loc_df, mo, pl):
 
     cash_outliers = _cash.filter(
         (pl.col("amount") < _lower) | (pl.col("amount") > _upper)
-    ).select("date", "occurred_at", "product_name", "amount", "machine_name", "cash_type")
+    ).select(
+        "date", "occurred_at", "product_name", "amount", "machine_name", "cash_type"
+    )
 
     mo.md(
         f"""
@@ -607,9 +681,7 @@ def _(currency, loc_df, mo, pl):
 @app.cell
 def _(alt, loc_df, mo, pl):
     _hourly_payment = (
-        loc_df.group_by("hour", "cash_type")
-        .agg(pl.len().alias("count"))
-        .sort("hour")
+        loc_df.group_by("hour", "cash_type").agg(pl.len().alias("count")).sort("hour")
     )
 
     _chart = (
@@ -634,11 +706,10 @@ def _(cash_outliers, loc_df, mo, pl):
     _outlier_pct = cash_outliers.height / _cash_count * 100 if _cash_count > 0 else 0
 
     _off_hours_cash = loc_df.filter(
-        (pl.col("cash_type") == "cash") & ((pl.col("hour") < 7) | (pl.col("hour") >= 20))
+        (pl.col("cash_type") == "cash")
+        & ((pl.col("hour") < 7) | (pl.col("hour") >= 20))
     ).height
-    _off_hours_all = loc_df.filter(
-        (pl.col("hour") < 7) | (pl.col("hour") >= 20)
-    ).height
+    _off_hours_all = loc_df.filter((pl.col("hour") < 7) | (pl.col("hour") >= 20)).height
     _off_cash_pct = _off_hours_cash / _off_hours_all * 100 if _off_hours_all > 0 else 0
 
     mo.callout(
@@ -696,9 +767,18 @@ def _(alt, daily_usage, mo):
             x=alt.X("date:T", title="Date"),
             y=alt.Y("total_used:Q", title="Daily Consumption"),
             color=alt.Color("location_name:N", title="Location"),
-            tooltip=["date:T", "ingredient_name", "location_name", alt.Tooltip("total_used:Q", format=",.1f"), "unit"],
+            tooltip=[
+                "date:T",
+                "ingredient_name",
+                "location_name",
+                alt.Tooltip("total_used:Q", format=",.1f"),
+                "unit",
+            ],
         )
-        .facet(facet=alt.Facet("ingredient_name:N", title="Ingredient", columns=2), columns=2)
+        .facet(
+            facet=alt.Facet("ingredient_name:N", title="Ingredient", columns=2),
+            columns=2,
+        )
         .resolve_scale(y="independent")
         .properties(title="Daily Ingredient Consumption by Location")
     )
@@ -724,8 +804,17 @@ def _(alt, daily_usage, mo, pl):
         .encode(
             x=alt.X("week:T", title="Week"),
             y=alt.Y("ingredient_name:N", title="Ingredient"),
-            color=alt.Color("weekly_used:Q", scale=alt.Scale(scheme="orangered"), title="Weekly Usage"),
-            tooltip=["week:T", "ingredient_name", "location_name", alt.Tooltip("weekly_used:Q", format=",.1f")],
+            color=alt.Color(
+                "weekly_used:Q",
+                scale=alt.Scale(scheme="orangered"),
+                title="Weekly Usage",
+            ),
+            tooltip=[
+                "week:T",
+                "ingredient_name",
+                "location_name",
+                alt.Tooltip("weekly_used:Q", format=",.1f"),
+            ],
         )
         .facet(row=alt.Row("location_name:N", title="Location"))
         .resolve_scale(color="independent")
@@ -743,30 +832,24 @@ def _(loc_df, pl, recipe_df):
     _all_products = loc_df["product_name"].unique().sort()
     _grid = _all_dates.to_frame().join(_all_products.to_frame(), how="cross")
 
-    _daily_product = (
-        loc_df.group_by("date", "product_name")
-        .agg(pl.len().alias("sales"))
+    _daily_product = loc_df.group_by("date", "product_name").agg(
+        pl.len().alias("sales")
     )
-    _daily_full = (
-        _grid.join(_daily_product, on=["date", "product_name"], how="left")
-        .with_columns(pl.col("sales").fill_null(0))
-    )
+    _daily_full = _grid.join(
+        _daily_product, on=["date", "product_name"], how="left"
+    ).with_columns(pl.col("sales").fill_null(0))
 
     # Step 2: Baseline (median daily sales per product)
-    _baseline = (
-        _daily_full.group_by("product_name")
-        .agg(pl.col("sales").median().alias("baseline"))
+    _baseline = _daily_full.group_by("product_name").agg(
+        pl.col("sales").median().alias("baseline")
     )
 
     # Step 3: Daily ratio = actual / baseline
-    _daily_ratio = (
-        _daily_full.join(_baseline, on="product_name")
-        .with_columns(
-            pl.when(pl.col("baseline") > 0)
-            .then(pl.col("sales") / pl.col("baseline"))
-            .otherwise(None)
-            .alias("ratio")
-        )
+    _daily_ratio = _daily_full.join(_baseline, on="product_name").with_columns(
+        pl.when(pl.col("baseline") > 0)
+        .then(pl.col("sales") / pl.col("baseline"))
+        .otherwise(None)
+        .alias("ratio")
     )
 
     # Step 4: For each ingredient, for each day, compute:
@@ -777,9 +860,9 @@ def _(loc_df, pl, recipe_df):
 
     _results = []
     for _ingredient in _all_ingredient_names:
-        _using = _product_ingredients.filter(
-            pl.col("ingredient_name") == _ingredient
-        )["product_name"].to_list()
+        _using = _product_ingredients.filter(pl.col("ingredient_name") == _ingredient)[
+            "product_name"
+        ].to_list()
 
         _using_ratios = (
             _daily_ratio.filter(pl.col("product_name").is_in(_using))
@@ -792,10 +875,9 @@ def _(loc_df, pl, recipe_df):
             .agg(pl.col("ratio").mean().alias("other_ratio"))
         )
 
-        _merged = (
-            _using_ratios.join(_not_using_ratios, on="date", how="inner")
-            .with_columns(pl.lit(_ingredient).alias("ingredient_name"))
-        )
+        _merged = _using_ratios.join(
+            _not_using_ratios, on="date", how="inner"
+        ).with_columns(pl.lit(_ingredient).alias("ingredient_name"))
         _results.append(_merged)
 
     stockout_analysis = pl.concat(_results)
@@ -817,12 +899,16 @@ def _(loc_df, pl, recipe_df):
 @app.cell
 def _(alt, mo, pl, stockout_analysis):
     # Visualize: for each ingredient, show the contrast between using-products and other-products
-    _melted = pl.concat([
-        stockout_analysis.select("date", "ingredient_name", pl.col("using_ratio").alias("ratio"))
-            .with_columns(pl.lit("Products using ingredient").alias("group")),
-        stockout_analysis.select("date", "ingredient_name", pl.col("other_ratio").alias("ratio"))
-            .with_columns(pl.lit("Other products").alias("group")),
-    ])
+    _melted = pl.concat(
+        [
+            stockout_analysis.select(
+                "date", "ingredient_name", pl.col("using_ratio").alias("ratio")
+            ).with_columns(pl.lit("Products using ingredient").alias("group")),
+            stockout_analysis.select(
+                "date", "ingredient_name", pl.col("other_ratio").alias("ratio")
+            ).with_columns(pl.lit("Other products").alias("group")),
+        ]
+    )
 
     _chart = (
         alt.Chart(_melted)
@@ -831,10 +917,18 @@ def _(alt, mo, pl, stockout_analysis):
             x=alt.X("date:T", title="Date"),
             y=alt.Y("ratio:Q", title="Sales Ratio (1.0 = normal)"),
             color=alt.Color("group:N", title="Product Group"),
-            tooltip=["date:T", "ingredient_name", "group", alt.Tooltip("ratio:Q", format=".2f")],
+            tooltip=[
+                "date:T",
+                "ingredient_name",
+                "group",
+                alt.Tooltip("ratio:Q", format=".2f"),
+            ],
         )
         .properties(width=300, height=180)
-        .facet(facet=alt.Facet("ingredient_name:N", title="Ingredient", columns=2), columns=2)
+        .facet(
+            facet=alt.Facet("ingredient_name:N", title="Ingredient", columns=2),
+            columns=2,
+        )
         .resolve_scale(y="shared")
     )
     mo.ui.altair_chart(_chart, chart_selection=False, legend_selection=False)
@@ -844,18 +938,29 @@ def _(alt, mo, pl, stockout_analysis):
 @app.cell
 def _(location_dropdown, mo, recipe_df, stockout_events):
     _n = stockout_events.height
-    mo.md(f"### Potential Ingredient Stockout Events — {location_dropdown.value}: **{_n}** flagged")
+    mo.md(
+        f"### Potential Ingredient Stockout Events — {location_dropdown.value}: **{_n}** flagged"
+    )
 
     if _n > 0:
         # Enrich with affected products
-        _product_ingredients = recipe_df.select("product_name", "ingredient_name").unique()
+        _product_ingredients = recipe_df.select(
+            "product_name", "ingredient_name"
+        ).unique()
         _enriched = stockout_events.join(
             _product_ingredients.group_by("ingredient_name").agg(
-                pl.col("product_name").sort().str.concat(", ").alias("affected_products")
+                pl.col("product_name")
+                .sort()
+                .str.concat(", ")
+                .alias("affected_products")
             ),
             on="ingredient_name",
         ).select(
-            "date", "ingredient_name", "using_pct_of_normal", "other_pct_of_normal", "affected_products"
+            "date",
+            "ingredient_name",
+            "using_pct_of_normal",
+            "other_pct_of_normal",
+            "affected_products",
         )
         mo.ui.table(_enriched)
     else:
@@ -875,17 +980,22 @@ def _(daily_usage, location_dropdown, mo, pl, stockout_events):
         .agg(pl.col("total_used").sum().alias("total"))
         .sort("total", descending=True)
     )
-    _top3 = [f"{r['ingredient_name']} ({r['total']:,.0f} {r['unit']})" for r in _top_ingredients.head(3).iter_rows(named=True)]
+    _top3 = [
+        f"{r['ingredient_name']} ({r['total']:,.0f} {r['unit']})"
+        for r in _top_ingredients.head(3).iter_rows(named=True)
+    ]
 
-    _flagged_ingredients = stockout_events["ingredient_name"].unique().to_list() if _n_events > 0 else []
+    _flagged_ingredients = (
+        stockout_events["ingredient_name"].unique().to_list() if _n_events > 0 else []
+    )
 
     mo.callout(
         mo.md(
             f"""
             **Ingredient Analysis Findings — {_loc}:**
 
-            - **Top consumed ingredients**: {', '.join(_top3)}
-            - **Stockout signals detected**: {_n_events} events across ingredients: {', '.join(_flagged_ingredients) if _flagged_ingredients else 'none'}
+            - **Top consumed ingredients**: {", ".join(_top3)}
+            - **Stockout signals detected**: {_n_events} events across ingredients: {", ".join(_flagged_ingredients) if _flagged_ingredients else "none"}
             - Detection method: days where products using an ingredient dropped to <30% of normal sales
               while other products maintained >60% — ruling out "slow day" false positives
             - Action: cross-reference flagged dates with physical restock logs to confirm stockouts
@@ -934,9 +1044,7 @@ def _(currency, date_range, loc_df, mo, pl):
     if isinstance(_stop, _dt.datetime):
         _stop = _stop.date()
 
-    filtered_df = loc_df.filter(
-        (pl.col("date") >= _start) & (pl.col("date") <= _stop)
-    )
+    filtered_df = loc_df.filter((pl.col("date") >= _start) & (pl.col("date") <= _stop))
 
     _n = filtered_df.height
     _rev = filtered_df["amount"].sum() if _n > 0 else 0
@@ -1040,7 +1148,9 @@ def _(loc_df, mo, pl):
 @app.cell(hide_code=True)
 def _(loc_df, mo, pl):
     _total_rev = loc_df["amount"].sum()
-    _latte_rev = loc_df.filter(pl.col("product_name").str.contains("(?i)latte"))["amount"].sum()
+    _latte_rev = loc_df.filter(pl.col("product_name").str.contains("(?i)latte"))[
+        "amount"
+    ].sum()
     _latte_share = _latte_rev / _total_rev * 100 if _total_rev > 0 else 0
     _verdict = "CONFIRMED" if _latte_share > 30 else "REJECTED"
     _kind = "success" if _verdict == "CONFIRMED" else "danger"
@@ -1068,11 +1178,13 @@ def _(loc_df, mo, pl):
 
     _off_cash_pct = (
         _off.filter(pl.col("cash_type") == "cash").height / _off.height * 100
-        if _off.height > 0 else 0
+        if _off.height > 0
+        else 0
     )
     _on_cash_pct = (
         _on.filter(pl.col("cash_type") == "cash").height / _on.height * 100
-        if _on.height > 0 else 0
+        if _on.height > 0
+        else 0
     )
     _diff = _off_cash_pct - _on_cash_pct
     _verdict = "CONFIRMED" if _diff > 5 else "REJECTED"
@@ -1110,7 +1222,11 @@ def _(loc_df, mo, pl):
         .mean()
     )
 
-    _drop_pct = (1 - _weekend_rev / _weekday_rev) * 100 if _weekday_rev and _weekday_rev > 0 else 0
+    _drop_pct = (
+        (1 - _weekend_rev / _weekday_rev) * 100
+        if _weekday_rev and _weekday_rev > 0
+        else 0
+    )
     _verdict = "CONFIRMED" if _drop_pct >= 20 else "REJECTED"
     _kind = "success" if _verdict == "CONFIRMED" else "danger"
 
@@ -1168,7 +1284,9 @@ def _(loc_df, mo, pl):
         )
     else:
         mo.callout(
-            mo.md("**H5:** Cannot test — no card token data available for this location."),
+            mo.md(
+                "**H5:** Cannot test — no card token data available for this location."
+            ),
             kind="neutral",
         )
     return

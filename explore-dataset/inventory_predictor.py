@@ -92,7 +92,12 @@ def _(alt, machine_df, mo):
             x=alt.X("date:T", title="Date"),
             y=alt.Y("total_quantity:Q", title="Daily quantity"),
             color=alt.Color("ingredient:N"),
-            tooltip=["date:T", "ingredient:N", alt.Tooltip("total_quantity:Q", format=",.1f"), "unit:N"],
+            tooltip=[
+                "date:T",
+                "ingredient:N",
+                alt.Tooltip("total_quantity:Q", format=",.1f"),
+                "unit:N",
+            ],
         )
         .properties(title="Daily consumption — all ingredients", width=750, height=300)
     )
@@ -115,7 +120,9 @@ def _(mo):
 @app.cell
 def _(machine_df, mo):
     _ingredients = sorted(machine_df["ingredient"].unique().to_list())
-    ingredient_dd = mo.ui.dropdown(options=_ingredients, value=_ingredients[0], label="Ingredient")
+    ingredient_dd = mo.ui.dropdown(
+        options=_ingredients, value=_ingredients[0], label="Ingredient"
+    )
     ingredient_dd
     return (ingredient_dd,)
 
@@ -141,13 +148,10 @@ def _(alt, ingredient_dd, machine_df, mo, pl):
         y="rolling_7d:Q",
     )
 
-    _chart = (
-        (_points + _line)
-        .properties(
-            title=f"{ingredient_dd.value} — daily consumption with 7-day rolling average",
-            width=750,
-            height=300,
-        )
+    _chart = (_points + _line).properties(
+        title=f"{ingredient_dd.value} — daily consumption with 7-day rolling average",
+        width=750,
+        height=300,
     )
     mo.ui.altair_chart(_chart)
     return
@@ -184,8 +188,11 @@ def _(alt, machine_df, mo, pl):
         )
         .filter(pl.col("prev_month_total").is_not_null())
         .with_columns(
-            ((pl.col("monthly_total") - pl.col("prev_month_total")) / pl.col("prev_month_total") * 100)
-            .alias("pct_change"),
+            (
+                (pl.col("monthly_total") - pl.col("prev_month_total"))
+                / pl.col("prev_month_total")
+                * 100
+            ).alias("pct_change"),
         )
     )
 
@@ -196,9 +203,17 @@ def _(alt, machine_df, mo, pl):
             x=alt.X("month:T", title="Month"),
             y=alt.Y("pct_change:Q", title="% Change from Previous Month"),
             color="ingredient:N",
-            tooltip=["month:T", "ingredient:N", alt.Tooltip("pct_change:Q", format=".1f"), alt.Tooltip("monthly_total:Q", format=",.0f"), "unit:N"],
+            tooltip=[
+                "month:T",
+                "ingredient:N",
+                alt.Tooltip("pct_change:Q", format=".1f"),
+                alt.Tooltip("monthly_total:Q", format=",.0f"),
+                "unit:N",
+            ],
         )
-        .properties(title="Month-over-month consumption change (%)", width=750, height=300)
+        .properties(
+            title="Month-over-month consumption change (%)", width=750, height=300
+        )
     )
     mo.ui.altair_chart(_chart)
     return
@@ -233,7 +248,12 @@ def _(alt, consumption_df, mo, pl):
             y=alt.Y("monthly_total:Q", title="Monthly total"),
             color="machine:N",
             strokeDash="machine:N",
-            tooltip=["month:T", "ingredient:N", "machine:N", alt.Tooltip("monthly_total:Q", format=",.0f")],
+            tooltip=[
+                "month:T",
+                "ingredient:N",
+                "machine:N",
+                alt.Tooltip("monthly_total:Q", format=",.0f"),
+            ],
         )
         .properties(width=350, height=200)
         .facet(facet="ingredient:N", columns=2)
