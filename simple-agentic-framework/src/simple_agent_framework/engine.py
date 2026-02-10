@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from itertools import count
@@ -329,6 +330,15 @@ class DailyAlertEngine:
 
         return summary
 
+    def _invalidate_current_day_run(self) -> None:
+        """Clear the RunLog for the current day so scripts are re-executed."""
+        with Session(self.sql_engine) as session:
+            state = session.exec(select(EngineState).where(EngineState.id == 1)).one()
+            existing = session.get(RunLog, state.current_day)
+            if existing is not None:
+                session.delete(existing)
+                session.commit()
+
     def _sha12(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
@@ -454,6 +464,7 @@ class DailyAlertEngine:
                 setting.updated_at = utc_now()
             session.add(setting)
             session.commit()
+        self._invalidate_current_day_run()
         return self.get_script(script_name)
 
     def revert_script_to_baseline(self, script_name: str) -> dict[str, Any]:
@@ -466,6 +477,7 @@ class DailyAlertEngine:
             setting.updated_at = utc_now()
             session.add(setting)
             session.commit()
+        self._invalidate_current_day_run()
         return self.get_script(script_name)
 
     def generate_script_edit(
@@ -567,6 +579,50 @@ class DailyAlertEngine:
             "retry_instruction": ai_review.get("retry_instruction"),
         }
 
+    def _compare_one_day(
+        self,
+        *,
+        day: date,
+        machines: list[dict[str, Any]],
+        location_currency: dict[int, str],
+        script_name: str,
+        old_code: str,
+        new_code: str,
+    ) -> tuple[int, int]:
+        old_day_alerts = 0
+        new_day_alerts = 0
+        for row in machines:
+            location_id = int(row["location_id"])
+            machine_id = int(row["machine_id"])
+            currency = location_currency.get(location_id, "USD")
+            context = build_script_context(
+                dbs=self.dbs,
+                as_of_date=day,
+                location_id=location_id,
+                machine_id=machine_id,
+                currency=currency,
+                state_db=self.state_db,
+                inventory_override=self._inventory_override_for_machine(
+                    run_day=day, machine_id=machine_id
+                ),
+            )
+
+            try:
+                old_emitted = run_script(
+                    script_name=script_name, code=old_code, context=context
+                )
+                new_emitted = run_script(
+                    script_name=script_name, code=new_code, context=context
+                )
+            except ScriptExecutionError as exc:
+                raise ValueError(
+                    f"Script comparison failed on day={day.isoformat()} machine={machine_id}: {exc}"
+                ) from exc
+
+            old_day_alerts += len(old_emitted)
+            new_day_alerts += len(new_emitted)
+        return old_day_alerts, new_day_alerts
+
     def _compare_script_codes_over_history(
         self,
         *,
@@ -599,57 +655,44 @@ class DailyAlertEngine:
         old_script_version = hashlib.sha256(old_code.encode()).hexdigest()[:12]
         new_script_version = hashlib.sha256(new_code.encode()).hexdigest()[:12]
 
-        day_cursor = start_day
-        while day_cursor <= end_day:
-            old_day_alerts = 0
-            new_day_alerts = 0
-            for row in machines:
-                location_id = int(row["location_id"])
-                machine_id = int(row["machine_id"])
-                currency = location_currency.get(location_id, "USD")
-                context = build_script_context(
-                    dbs=self.dbs,
-                    as_of_date=day_cursor,
-                    location_id=location_id,
-                    machine_id=machine_id,
-                    currency=currency,
-                    state_db=self.state_db,
-                    inventory_override=self._inventory_override_for_machine(
-                        run_day=day_cursor, machine_id=machine_id
-                    ),
-                )
+        days = []
+        d = start_day
+        while d <= end_day:
+            days.append(d)
+            d += timedelta(days=1)
 
-                try:
-                    old_emitted = run_script(
-                        script_name=script_name, code=old_code, context=context
+        with ThreadPoolExecutor(max_workers=min(4, len(days))) as pool:
+            futures = {
+                pool.submit(
+                    self._compare_one_day,
+                    day=d,
+                    machines=machines,
+                    location_currency=location_currency,
+                    script_name=script_name,
+                    old_code=old_code,
+                    new_code=new_code,
+                ): d
+                for d in days
+            }
+            for future in as_completed(futures):
+                d = futures[future]
+                old_day_alerts, new_day_alerts = future.result()
+                old_total_alerts += old_day_alerts
+                new_total_alerts += new_day_alerts
+                if old_day_alerts > 0:
+                    old_days_triggered += 1
+                if new_day_alerts > 0:
+                    new_days_triggered += 1
+                if old_day_alerts != new_day_alerts:
+                    changed_days.append(
+                        {
+                            "date": d.isoformat(),
+                            "old_alerts": old_day_alerts,
+                            "new_alerts": new_day_alerts,
+                        }
                     )
-                    new_emitted = run_script(
-                        script_name=script_name, code=new_code, context=context
-                    )
-                except ScriptExecutionError as exc:
-                    raise ValueError(
-                        f"Script comparison failed on day={day_cursor.isoformat()} machine={machine_id}: {exc}"
-                    ) from exc
 
-                old_day_alerts += len(old_emitted)
-                new_day_alerts += len(new_emitted)
-
-            old_total_alerts += old_day_alerts
-            new_total_alerts += new_day_alerts
-            if old_day_alerts > 0:
-                old_days_triggered += 1
-            if new_day_alerts > 0:
-                new_days_triggered += 1
-            if old_day_alerts != new_day_alerts:
-                changed_days.append(
-                    {
-                        "date": day_cursor.isoformat(),
-                        "old_alerts": old_day_alerts,
-                        "new_alerts": new_day_alerts,
-                    }
-                )
-
-            day_cursor += timedelta(days=1)
+        changed_days.sort(key=lambda x: x["date"])
 
         return {
             "start_day": start_day.isoformat(),
@@ -740,15 +783,18 @@ class DailyAlertEngine:
         return summary
 
     def advance_day(self) -> dict[str, Any]:
+        # 1. Run scripts for current day N (idempotent via RunLog guard)
         with Session(self.sql_engine) as session:
             state = session.exec(select(EngineState).where(EngineState.id == 1)).one()
             run_day = state.current_day
 
         summary = self._run_for_day_once(run_day)
 
+        # 2. Persist inventory for N→N+1, advance current_day to N+1
         with Session(self.sql_engine) as session:
             state = session.exec(select(EngineState).where(EngineState.id == 1)).one()
-            if state.current_day < state.end_day:
+            end_day = state.end_day
+            if state.current_day < end_day:
                 if self._run_id is not None:
                     self._persist_next_day_inventory(
                         session=session,
@@ -760,14 +806,28 @@ class DailyAlertEngine:
             state.updated_at = utc_now()
             session.add(state)
             session.commit()
-            updated = {
-                "start_day": state.start_day.isoformat(),
-                "end_day": state.end_day.isoformat(),
-                "current_day": state.current_day.isoformat(),
-            }
+            new_day = state.current_day
+
+        # 3. Run scripts for the new day so alerts are visible immediately
+        summary = self._run_for_day_once(new_day)
+
+        # 4. Persist inventory for new_day→new_day+1
+        if self._run_id is not None and new_day < end_day:
+            with Session(self.sql_engine) as session:
+                self._persist_next_day_inventory(
+                    session=session,
+                    run_id=self._run_id,
+                    run_day=new_day,
+                    next_day=new_day + timedelta(days=1),
+                    overwrite=True,
+                )
 
         return {
-            "state": updated,
+            "state": {
+                "start_day": run_day.isoformat(),
+                "end_day": end_day.isoformat(),
+                "current_day": new_day.isoformat(),
+            },
             "summary": {
                 "run_date": summary.run_date,
                 "executed_scripts": summary.executed_scripts,
@@ -1405,6 +1465,13 @@ class DailyAlertEngine:
                 "run_date": alert.run_date.isoformat(),
                 "evidence": json.loads(alert.evidence_json),
             }
+
+            if alert.machine_id is not None:
+                inv = self._inventory_override_for_machine(
+                    run_day=state.current_day, machine_id=alert.machine_id
+                )
+                payload["inventory_snapshot"] = inv.get("rows", [])
+
             related_payloads = [
                 {
                     "alert_id": item.alert_id,
@@ -1419,11 +1486,25 @@ class DailyAlertEngine:
                 manager_note=manager_note,
             )
 
+            if review.get("optional_script_change"):
+                known_scripts = {s["script_name"] for s in self.list_scripts()}
+                suggested = review["optional_script_change"]["script_name"]
+                if suggested not in known_scripts:
+                    review["optional_script_change"]["script_name"] = alert.script_name
+
             alert.feedback_loop_id = review["feedback_loop_id"]
             session.add(alert)
             session.commit()
 
             return review
+
+    async def review_alert_async(
+        self, alert_id: str, manager_note: str | None = None
+    ) -> dict[str, Any]:
+        """Run review_alert in a thread so it doesn't block the event loop."""
+        import asyncio
+
+        return await asyncio.to_thread(self.review_alert, alert_id, manager_note)
 
     def dashboard_summary(
         self, *, days: int = 14, location_id: int | None = None

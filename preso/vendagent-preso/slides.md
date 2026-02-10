@@ -71,7 +71,7 @@ Agentic operations dashboard for vending machines
 </div>
 
 <div class="abs-br m-6 text-xs tracking-wide" style="color: #6272a4;">
-  Pydantic AI · FastAPI · SvelteKit
+  Pydantic AI · FastAPI · Typescript
 </div>
 
 ---
@@ -167,6 +167,8 @@ transition: slide-left
 
 <div class="text-sm leading-relaxed" style="color: #f8f8f2;">
 A working end-to-end system demonstrating agentic operations management — from data ingestion through manager decision-making.
+
+Simulates managing the https://www.kaggle.com/datasets/ihelon/coffee-sales vending machines (with a second set in California) for the final month of data
 </div>
 
 <div class="mt-5">
@@ -189,12 +191,12 @@ A working end-to-end system demonstrating agentic operations management — from
   <div class="sep"></div>
   <div>
     <div class="item-title">Extensible Ingestion Pipeline</div>
-    <div class="item-desc mt-1">Expand to new machines, locations, and products with minimal configuration</div>
+    <div class="item-desc mt-1">Builds from transaction data -> price-point tracking -> input inventory management. Expand to new machines, inputs, locations, and products with minimal configuration</div>
   </div>
   <div class="sep"></div>
   <div>
     <div class="item-title">Safe Sandboxed Operations</div>
-    <div class="item-desc mt-1">Leverages bleeding-edge Pydantic sandbox for secure code execution</div>
+    <div class="item-desc mt-1">Leverages bleeding-edge Pydantic Monty sandbox for secure code execution (future of Pydantic Code Agents)</div>
   </div>
   <div class="sep"></div>
   <div>

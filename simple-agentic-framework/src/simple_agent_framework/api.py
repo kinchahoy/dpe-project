@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json as json_mod
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -142,6 +143,20 @@ def create_app(
             return engine.review_alert(alert_id, req.manager_note)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/alerts/{alert_id}/review-ai-stream")
+    async def review_alert_stream(alert_id: str, req: ReviewRequest) -> StreamingResponse:
+        async def event_stream():  # type: ignore[return]
+            yield f"data: {json_mod.dumps({'type': 'status', 'text': 'Analyzing alert...'})}\n\n"
+            try:
+                result = await engine.review_alert_async(alert_id, req.manager_note)
+                yield f"data: {json_mod.dumps({'type': 'result', 'data': result}, default=str)}\n\n"
+            except ValueError as exc:
+                yield f"data: {json_mod.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+            except Exception as exc:
+                yield f"data: {json_mod.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.get("/api/dashboard")
     def dashboard(days: int = 14, location_id: int | None = None) -> dict[str, Any]:

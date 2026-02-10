@@ -15,10 +15,11 @@ node_modules/
 
 # Environment
 .env
-.env.*
+!.env.example
 
 # SQLite databases
 *.db
+*.db-journal
 
 # OS
 .DS_Store
@@ -27,3 +28,9 @@ node_modules/
 .idea/
 .vscode/
 *.swp
+
+# AI tools
+.aider.*
+
+# Deployment
+deploymentguide.md

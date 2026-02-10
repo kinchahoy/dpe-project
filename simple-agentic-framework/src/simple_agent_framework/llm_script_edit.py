@@ -14,6 +14,9 @@ The script runs in a sandbox with NO imports allowed. Write plain Python only.
 
 Constraints:
 - NO imports (the sandbox blocks all imports)
+- The script MUST start with a comment header: the file name on line 1,
+  then 2-3 lines explaining what the script monitors and when it fires,
+  written for a non-technical operations manager (no jargon)
 - Set `result` to a `list` of alert dicts (empty list = no alert)
 - Max ~100 lines (be concise)
 - Use only `ctx` and the helper functions already used in the script

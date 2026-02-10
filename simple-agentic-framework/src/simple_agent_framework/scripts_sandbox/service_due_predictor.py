@@ -1,51 +1,45 @@
 # service_due_predictor.py
-# Predict when preventive service should be scheduled based on elapsed time.
+# Alerts when a machine is within its preventive-service window (14 days
+# before the scheduled interval). Severity is HIGH if due within 7 days.
 # Triggers: SCHEDULE_SERVICE
 
 SERVICE_INTERVAL_DAYS = 110
 SERVICE_WINDOW_DAYS = 14
 
 as_of = ctx["meta"]["as_of_date"]
-machine = ctx.get("entities", {}).get("machine", {}) or {}
-last_serviced_at_raw = machine.get("last_serviced_at")
+last_serviced_raw = (ctx.get("entities", {}).get("machine", {}) or {}).get("last_serviced_at")
 
-if not as_of or not last_serviced_at_raw:
+if not as_of or not last_serviced_raw:
     result = []
 else:
-    last_service_date = str(last_serviced_at_raw)[:10]
-    days_since_service = days_between(last_service_date, as_of)
-    days_since_service = max(0, int(days_since_service))
+    last_service_date = str(last_serviced_raw)[:10]
+    days_since = max(0, days_between(last_service_date, as_of))
+    days_until_due = SERVICE_INTERVAL_DAYS - days_since
 
-    days_until_due = SERVICE_INTERVAL_DAYS - days_since_service
-    overdue_days = max(0, -days_until_due)
-    in_service_window = days_until_due <= SERVICE_WINDOW_DAYS
-
-    if not in_service_window:
+    if days_until_due > SERVICE_WINDOW_DAYS:
         result = []
     else:
-        priority = "HIGH" if days_until_due <= 7 else "MEDIUM"
-        service_due_date = date_add(last_service_date, SERVICE_INTERVAL_DAYS)
-
+        severity = "HIGH" if days_until_due <= 7 else "MEDIUM"
         result = [
             alert(
                 "service_due",
-                priority,
+                severity,
                 "Service window likely due",
                 f"Preventive service is due in {days_until_due} day(s).",
                 {
-                    "days_since_service": days_since_service,
+                    "days_since_service": days_since,
                     "days_until_due": days_until_due,
                     "last_service_date": last_service_date,
                     "service_interval_days": SERVICE_INTERVAL_DAYS,
-                    "service_due_date": service_due_date,
-                    "overdue_days": overdue_days,
+                    "service_due_date": date_add(last_service_date, SERVICE_INTERVAL_DAYS),
+                    "overdue_days": max(0, -days_until_due),
                 },
                 [
                     (
                         "SCHEDULE_SERVICE",
                         {
                             "machine_id": ctx["ids"]["machine_id"],
-                            "priority": priority,
+                            "priority": severity,
                             "reason": "time since last service",
                             "suggested_date": date_add(as_of, 2),
                         },

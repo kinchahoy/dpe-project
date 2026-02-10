@@ -643,7 +643,7 @@ function renderState() {
         el.statePill.textContent = "Loading\u2026";
         return;
     }
-    el.statePill.textContent = `Viewing: ${formatDate(state.current_day)}`;
+    el.statePill.textContent = `End of day: ${formatDate(state.current_day)}`;
     el.skipDate.value = state.current_day;
 }
 function renderAlerts() {
@@ -660,7 +660,7 @@ function renderAlerts() {
     for (const a of alerts) {
         const isActive = a.alert_id === selectedAlertId;
         const card = document.createElement("div");
-        card.className = `card${isActive ? " card--active" : ""}`;
+        card.className = `card${isActive ? " card--active" : ""}${a.severity === "CRITICAL" ? " card--critical" : ""}`;
         card.tabIndex = 0;
         card.onclick = () => {
             selectedAlertId = selectedAlertId === a.alert_id ? null : a.alert_id;
@@ -762,7 +762,7 @@ function buildAlertExpanded(a) {
         const aiWrap = document.createElement("div");
         aiWrap.className = "ai-review";
         if (aiReviewBusy) {
-            aiWrap.appendChild(createSpinnerLabel("AI review queued and running..."));
+            aiWrap.appendChild(createSpinnerLabel("Analyzing alert..."));
         }
         if (aiReviewError) {
             const err = document.createElement("div");
@@ -872,13 +872,40 @@ function buildAlertExpanded(a) {
         renderAlerts();
         try {
             const manager_note = note.value.trim() || null;
-            const res = await api(`/api/alerts/${a.alert_id}/review-ai`, {
+            const res = await fetch(`/api/alerts/${a.alert_id}/review-ai-stream`, {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ manager_note }),
             });
-            aiReviewByAlertId.set(a.alert_id, res);
-            if (res.optional_script_change) {
-                upsertScriptInstruction(res.optional_script_change.script_name, res.optional_script_change.edit_instruction ?? res.optional_script_change.change_hint);
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(`${res.status} ${res.statusText}: ${text}`);
+            }
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done)
+                    break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n\n");
+                buffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.startsWith("data: "))
+                        continue;
+                    const msg = JSON.parse(line.slice(6));
+                    if (msg.type === "result") {
+                        const reviewData = msg.data;
+                        aiReviewByAlertId.set(a.alert_id, reviewData);
+                        if (reviewData.optional_script_change) {
+                            upsertScriptInstruction(reviewData.optional_script_change.script_name, reviewData.optional_script_change.edit_instruction ?? reviewData.optional_script_change.change_hint);
+                        }
+                    }
+                    else if (msg.type === "error") {
+                        aiReviewErrorByAlertId.set(a.alert_id, msg.text);
+                    }
+                }
             }
         }
         catch (err) {
@@ -896,10 +923,46 @@ function buildAlertExpanded(a) {
     container.appendChild(actions);
     return container;
 }
+function renderStatCards(dash, inv) {
+    const byLocation = new Map();
+    for (const loc of inv.locations) {
+        byLocation.set(loc.location_id, { revenue: 0, tx: 0, name: loc.location_name });
+    }
+    for (const row of dash.daily_revenue) {
+        const entry = byLocation.get(row.location_id);
+        if (entry) {
+            entry.revenue += Number(row.revenue);
+            entry.tx += Number(row.tx_count);
+        }
+    }
+    if (byLocation.size === 0)
+        return;
+    const grid = document.createElement("div");
+    grid.className = "stat-grid";
+    for (const [locId, data] of byLocation) {
+        const card = document.createElement("div");
+        card.className = "stat-card";
+        const label = document.createElement("div");
+        label.className = "stat-card__label";
+        label.textContent = data.name;
+        const value = document.createElement("div");
+        value.className = "stat-card__value";
+        value.textContent = formatCurrency(data.revenue, currencyForLocation(locId));
+        const sub = document.createElement("div");
+        sub.className = "stat-card__sub";
+        sub.textContent = `${data.tx.toLocaleString("en-US")} transactions`;
+        card.appendChild(label);
+        card.appendChild(value);
+        card.appendChild(sub);
+        grid.appendChild(card);
+    }
+    el.dashboard.appendChild(grid);
+}
 function renderDashboard(dash, inv) {
     const roleLabel = ROLE_SCOPE[activeRole].label;
     el.dashMeta.textContent = `${roleLabel} · Last 14 days: ${formatDateRange(dash.start_day, dash.end_day)}`;
     el.dashboard.innerHTML = "";
+    renderStatCards(dash, inv);
     renderInventory(inv, dash);
     // Alert patterns section
     if (dash.top_alert_patterns.length > 0) {
@@ -1424,6 +1487,9 @@ function renderScripts() {
         el.scriptsList.appendChild(card);
     }
 }
+const SEVERITY_ORDER = {
+    CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3,
+};
 const INGREDIENT_ICONS = {
     espresso_shot: "\u2615",
     milk: "\ud83e\udd5b",
@@ -1456,6 +1522,7 @@ function ingredientFillPercent(quantity, capacity) {
     return Math.min(100, Math.max(0, (quantity / capacity) * 100));
 }
 function renderInventory(inv, dash) {
+    const barsToAnimate = [];
     const revenueByMachine = new Map();
     for (const row of dash.machine_revenue) {
         revenueByMachine.set(`${row.location_id}:${row.machine_id}`, {
@@ -1601,10 +1668,12 @@ function renderInventory(inv, dash) {
                 bar.className = "inv-ingredient__bar inv-ingredient__bar--single";
                 const startFill = document.createElement("div");
                 startFill.className = "inv-ingredient__fill inv-ingredient__fill--start";
-                startFill.style.width = `${startPct}%`;
+                startFill.style.width = "0%";
+                barsToAnimate.push({ el: startFill, width: `${startPct}%` });
                 const endFill = document.createElement("div");
                 endFill.className = `inv-ingredient__fill inv-ingredient__fill--end${isLow ? " inv-ingredient__fill--low" : ""}`;
-                endFill.style.width = `${endPct}%`;
+                endFill.style.width = "0%";
+                barsToAnimate.push({ el: endFill, width: `${endPct}%` });
                 bar.appendChild(startFill);
                 bar.appendChild(endFill);
                 chart.appendChild(meta);
@@ -1621,11 +1690,23 @@ function renderInventory(inv, dash) {
         section.appendChild(locSection);
     }
     el.dashboard.prepend(section);
+    requestAnimationFrame(() => {
+        for (const b of barsToAnimate) {
+            b.el.style.width = b.width;
+        }
+    });
 }
 function applyRoleFilterAndRender() {
     const role = ROLE_SCOPE[activeRole];
     const allowed = role.locationIds;
     alerts = rawAlerts.filter((a) => (allowed ? allowed.includes(a.location_id) : true));
+    alerts.sort((a, b) => {
+        const sa = SEVERITY_ORDER[a.severity] ?? 99;
+        const sb = SEVERITY_ORDER[b.severity] ?? 99;
+        if (sa !== sb)
+            return sa - sb;
+        return b.created_at.localeCompare(a.created_at);
+    });
     const dash = rawDashboard ? filterDashboardForRole(rawDashboard) : null;
     const inv = rawInventory ? filterInventoryForRole(rawInventory) : null;
     if (selectedAlertId && !alerts.some((a) => a.alert_id === selectedAlertId)) {

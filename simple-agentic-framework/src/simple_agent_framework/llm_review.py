@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from typing import cast
 from uuid import uuid4
 
@@ -11,11 +11,18 @@ from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModel
 
 from .time_utils import utc_now
 
+ActionType = Literal[
+    "RESTOCK_MACHINE",
+    "ORDER_INGREDIENTS",
+    "ADJUST_PRICE",
+    "SCHEDULE_SERVICE",
+    "CHECK_MACHINE",
+    "PROPOSE_DISCONTINUE",
+]
+
 
 class SuggestedAction(BaseModel):
-    action_type: str = Field(
-        description="One of: RESTOCK_MACHINE, ORDER_INGREDIENTS, ADJUST_PRICE, SCHEDULE_SERVICE, CHECK_MACHINE, PROPOSE_DISCONTINUE"
-    )
+    action_type: ActionType
     reason: str = Field(description="Why this action is recommended")
     params: dict[str, Any] = Field(
         default_factory=dict, description="Action-specific parameters"
@@ -82,13 +89,12 @@ def _get_agent() -> Agent[None, AlertReview]:
     return _agent
 
 
-def review_alert_with_ai(
+def _build_review_prompt(
     *,
     alert: dict[str, Any],
     related_open_alerts: list[dict[str, Any]],
     manager_note: str | None,
-) -> dict[str, Any]:
-    """Send alert to LLM for review and return structured response."""
+) -> str:
     prompt_parts = [
         f"## Alert to review\n```json\n{json.dumps(alert, indent=2, default=str)}\n```",
     ]
@@ -99,12 +105,10 @@ def review_alert_with_ai(
         )
     if manager_note:
         prompt_parts.append(f"## Manager note\n{manager_note}")
+    return "\n\n".join(prompt_parts)
 
-    prompt = "\n\n".join(prompt_parts)
 
-    result = _get_agent().run_sync(prompt)
-    review: AlertReview = result.output
-
+def _format_review(review: AlertReview, alert: dict[str, Any]) -> dict[str, Any]:
     return {
         "feedback_loop_id": str(uuid4()),
         "reviewed_at": utc_now().isoformat(timespec="seconds"),
@@ -126,3 +130,21 @@ def review_alert_with_ai(
         if review.script_change
         else None,
     }
+
+
+def review_alert_with_ai(
+    *,
+    alert: dict[str, Any],
+    related_open_alerts: list[dict[str, Any]],
+    manager_note: str | None,
+) -> dict[str, Any]:
+    """Send alert to LLM for review and return structured response."""
+    prompt = _build_review_prompt(
+        alert=alert,
+        related_open_alerts=related_open_alerts,
+        manager_note=manager_note,
+    )
+    result = _get_agent().run_sync(prompt)
+    return _format_review(result.output, alert)
+
+
