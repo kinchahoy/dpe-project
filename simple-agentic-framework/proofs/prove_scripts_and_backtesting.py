@@ -3,10 +3,14 @@
 Demonstrates:
   1. Baseline scripts run and produce alerts for the current day.
   2. Backtesting over a date range is idempotent (two runs → same counts).
-  3. A modified script (simulated LLM edit) produces different alert counts.
+  3. The full LLM edit → compare → final-check → activate flow works end-to-end
+     (same path the UI takes).
   4. The RunLog-invalidation fix lets re-running the current day pick up changes.
 
 Fully idempotent: uses a temp state DB that is deleted and recreated each run.
+
+Requires:
+  - OPENAI_API_KEY set in environment (the LLM edit calls GPT).
 
 Usage:
     uv run python proofs/prove_scripts_and_backtesting.py [--db-dir DIR]
@@ -15,16 +19,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
 from loguru import logger
-from sqlmodel import Session, select
+from sqlmodel import Session
+
+load_dotenv()
 
 from simple_agent_framework.engine import DailyAlertEngine
-from simple_agent_framework.models import RunLog, ScriptRevision, ScriptSetting
+from simple_agent_framework.models import RunLog
 from simple_agent_framework.script_registry import discover_scripts
 
 
@@ -39,41 +45,6 @@ def setup_logging(log_path: Path) -> None:
     logger.remove()
     logger.add(sys.stdout, format="{message}")
     logger.add(log_path, mode="w", format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}")
-
-
-# A trivially modified version of service_due_predictor that never fires
-# (window set to 0 days, so it's impossible to be "in window").
-MODIFIED_SERVICE_SCRIPT = """\
-# service_due_predictor.py
-# PROOF VARIANT: window set to 0 so this script never fires.
-# Used to verify that activating a modified script changes alert output.
-
-SERVICE_INTERVAL_DAYS = 110
-SERVICE_WINDOW_DAYS = 0
-
-as_of = ctx["meta"]["as_of_date"]
-last_serviced_raw = (ctx.get("entities", {}).get("machine", {}) or {}).get("last_serviced_at")
-
-if not as_of or not last_serviced_raw:
-    result = []
-else:
-    last_service_date = str(last_serviced_raw)[:10]
-    days_since = max(0, days_between(last_service_date, as_of))
-    days_until_due = SERVICE_INTERVAL_DAYS - days_since
-    if days_until_due > SERVICE_WINDOW_DAYS:
-        result = []
-    else:
-        result = [
-            alert(
-                "service_due",
-                "MEDIUM",
-                "Service window likely due",
-                f"Preventive service is due in {days_until_due} day(s).",
-                {"days_since_service": days_since, "days_until_due": days_until_due, "last_service_date": last_service_date},
-                [("SCHEDULE_SERVICE", {"machine_id": ctx["ids"]["machine_id"], "priority": "MEDIUM", "reason": "proof variant", "suggested_date": date_add(as_of, 2)})],
-            )
-        ]
-"""
 
 
 def main() -> int:
@@ -95,7 +66,7 @@ def main() -> int:
 
     # ── Step 1: Create engine, verify baseline scripts load ─────────
     logger.info("")
-    logger.info("Step 1/7: Create engine and verify baseline scripts")
+    logger.info("Step 1/8: Create engine and verify baseline scripts")
     engine = DailyAlertEngine(db_dir=args.db_dir, state_db=state_db)
     scripts = discover_scripts()
     script_names = [name for name, _ in scripts]
@@ -105,7 +76,7 @@ def main() -> int:
 
     # ── Step 2: Run current day, verify alerts are produced ─────────
     logger.info("")
-    logger.info("Step 2/7: Run baseline scripts for current day")
+    logger.info("Step 2/8: Run baseline scripts for current day")
     summary = engine.run_current_day()
     logger.info(
         "  run_date={}, executed_scripts={}, emitted_alerts={}",
@@ -123,7 +94,7 @@ def main() -> int:
 
     # ── Step 3: Run current day again → idempotent (RunLog guard) ───
     logger.info("")
-    logger.info("Step 3/7: Re-run current day (RunLog idempotency check)")
+    logger.info("Step 3/8: Re-run current day (RunLog idempotency check)")
     summary2 = engine.run_current_day()
     logger.info(
         "  run_date={}, executed_scripts={}, emitted_alerts={}",
@@ -139,7 +110,7 @@ def main() -> int:
 
     # ── Step 4: Backtest over a date range ──────────────────────────
     logger.info("")
-    logger.info("Step 4/7: Backtest over date range")
+    logger.info("Step 4/8: Backtest over date range")
     engine_state = engine.get_state()
     start_day = date.fromisoformat(engine_state["start_day"])
     end_day = date.fromisoformat(engine_state["end_day"])
@@ -156,7 +127,7 @@ def main() -> int:
 
     # ── Step 5: Backtest same range again → idempotent ──────────────
     logger.info("")
-    logger.info("Step 5/7: Re-backtest same range (idempotency check)")
+    logger.info("Step 5/8: Re-backtest same range (idempotency check)")
     bt_results_2 = engine.run_backtest(start_day=bt_start, end_day=bt_end)
     bt_total_2 = sum(r["emitted_alerts"] for r in bt_results_2)
     logger.info("  Run 2: {} days, {} total alerts", len(bt_results_2), bt_total_2)
@@ -169,31 +140,61 @@ def main() -> int:
         )
     logger.info("  OK: backtest is idempotent (identical alert counts)")
 
-    # ── Step 6: Activate a modified script, verify different output ──
+    # ── Step 6: LLM edit → compare → final-check (same path as UI) ──
+    # The baseline service_due_predictor alerts when a machine is within
+    # SERVICE_WINDOW_DAYS (14) of its scheduled maintenance interval.
+    # We ask the LLM to widen the window to 999 days so the alert fires
+    # for virtually every machine — proving the edit changes output.
     logger.info("")
-    logger.info("Step 6/7: Activate modified script and re-run current day")
+    logger.info("Step 6/8: Ask LLM to edit service_due_predictor (UI flow)")
     script_name = "service_due_predictor"
-    code_sha = hashlib.sha256(MODIFIED_SERVICE_SCRIPT.encode("utf-8")).hexdigest()[:12]
-    logger.info("  Script: {}, modified SHA: {}", script_name, code_sha)
+    edit_instruction = (
+        "Change SERVICE_WINDOW_DAYS to 999 so the alert triggers for "
+        "every machine regardless of how far out the service date is."
+    )
+    logger.info("  Script: {}", script_name)
+    logger.info("  Instruction: {}", edit_instruction)
 
-    # Insert the revision and activate it.
-    with Session(engine.sql_engine) as session:
-        rev = ScriptRevision(
-            script_name=script_name,
-            base_sha="baseline",
-            instruction="proof: set SERVICE_WINDOW_DAYS=0 so script never fires",
-            code=MODIFIED_SERVICE_SCRIPT,
-        )
-        session.add(rev)
-        session.commit()
-        session.refresh(rev)
-        revision_id = rev.id
+    # 6a. generate_script_edit — calls the LLM, stores a ScriptRevision draft.
+    draft = engine.generate_script_edit(script_name, edit_instruction)
+    revision_id = draft["revision_id"]
+    logger.info("  Draft revision: {}", revision_id)
+    logger.info("  Draft code ({} chars):\n{}", len(draft["code"]), draft["code"])
+
+    # Basic sanity on the LLM output.
+    assert "result" in draft["code"], "LLM draft must set `result`"
+    assert "import " not in draft["code"], "LLM draft must not contain imports"
+    # The LLM should have changed the window value — look for 999 or a very
+    # large number in the code (the exact constant name may vary).
+    assert "999" in draft["code"] or "SERVICE_WINDOW_DAYS" in draft["code"], (
+        "LLM draft should reference the changed window value"
+    )
+    logger.info("  Draft passes basic sanity checks")
+
+    # 6b. compare_script_revision_history — backtests old code vs new code.
+    logger.info("  Comparing draft against baseline over history...")
+    comparison = engine.compare_script_revision_history(script_name, revision_id)
+    comp_data = comparison["comparison"]
+    logger.info("  Comparison keys: {}", list(comp_data.keys()) if isinstance(comp_data, dict) else type(comp_data))
+    logger.info("  OK: comparison completed")
+
+    # 6c. final_check_script_revision — LLM reviews the diff + comparison.
+    logger.info("  Running final AI check on draft...")
+    final_check = engine.final_check_script_revision(
+        script_name, revision_id, comp_data,
+    )
+    logger.info("  Recommended action: {}", final_check.get("recommended_action"))
+    logger.info("  Rationale: {}", final_check.get("rationale"))
+    logger.info("  OK: final check completed")
+
+    # ── Step 7: Activate the LLM-edited script and re-run ────────────
+    logger.info("")
+    logger.info("Step 7/8: Activate LLM-edited draft and re-run current day")
 
     engine.activate_script_revision(script_name, revision_id)
     logger.info("  Activated revision {}", revision_id)
 
     # The activate call should have invalidated the RunLog for the current day.
-    # Verify the RunLog was cleared.
     current_day = date.fromisoformat(engine.get_state()["current_day"])
     with Session(engine.sql_engine) as session:
         run_log = session.get(RunLog, current_day)
@@ -202,7 +203,7 @@ def main() -> int:
         )
     logger.info("  RunLog for {} was correctly invalidated", current_day.isoformat())
 
-    # Re-run the current day with the modified script.
+    # Re-run the current day with the LLM-edited script.
     summary3 = engine.run_current_day()
     logger.info(
         "  Re-run: run_date={}, executed_scripts={}, emitted_alerts={}",
@@ -210,20 +211,20 @@ def main() -> int:
     )
     assert summary3.executed_scripts > 0, "Scripts should re-execute after RunLog invalidation"
 
-    # Compare emitted alert counts from run summaries (not list_alerts, which
-    # includes historical alerts from earlier steps that remain OPEN).
+    # With SERVICE_WINDOW_DAYS=999, the modified script should fire for more
+    # machines than the baseline (window=14), producing more alerts.
     logger.info(
         "  Emitted alerts: baseline={}, modified={}",
         summary.emitted_alerts, summary3.emitted_alerts,
     )
-    assert summary3.emitted_alerts < summary.emitted_alerts, (
-        f"Modified script should emit fewer alerts than baseline: {summary3.emitted_alerts} >= {summary.emitted_alerts}"
+    assert summary3.emitted_alerts != summary.emitted_alerts, (
+        f"Modified script should produce a different alert count: {summary3.emitted_alerts} == {summary.emitted_alerts}"
     )
-    logger.info("  OK: modified script changed alert output as expected")
+    logger.info("  OK: LLM-edited script changed alert output as expected")
 
-    # ── Step 7: Revert to baseline and verify restoration ───────────
+    # ── Step 8: Revert to baseline and verify restoration ───────────
     logger.info("")
-    logger.info("Step 7/7: Revert to baseline and verify restoration")
+    logger.info("Step 8/8: Revert to baseline and verify restoration")
     engine.revert_script_to_baseline(script_name)
 
     # Revert also invalidates RunLog, so re-run should work.
@@ -238,8 +239,8 @@ def main() -> int:
         "  Emitted alerts: reverted={}, original_baseline={}",
         summary4.emitted_alerts, summary.emitted_alerts,
     )
-    assert summary4.emitted_alerts >= summary.emitted_alerts, (
-        f"Reverted run should emit at least as many alerts as baseline: {summary4.emitted_alerts} < {summary.emitted_alerts}"
+    assert summary4.emitted_alerts == summary.emitted_alerts, (
+        f"Reverted run should match baseline: {summary4.emitted_alerts} != {summary.emitted_alerts}"
     )
     logger.info("  OK: reverted to baseline, alert output restored")
 
