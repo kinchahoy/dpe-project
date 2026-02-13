@@ -6,46 +6,65 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import altair as alt
     import marimo as mo
     import polars as pl
-    import altair as alt
-    import sqlite3
 
-    return alt, mo, pl, sqlite3
+    from notebook_db import query_df, resolve_vending_db_paths
+
+    return alt, mo, pl, query_df, resolve_vending_db_paths
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""
-    # Price Driver Investigation
-
-    **Approach:** Prices change seasonally (a prevailing price holds for weeks/months,
-    then shifts). We first detect these **price seasons**, then check whether hour
-    or weekday explains any remaining variation *within* a season.
-    """)
+    mo.md(
+        "# Price Driver Investigation\n\n"
+        "Focused root-cause view using `sim_transaction_expanded` (machine-level):\n"
+        "1. Charged vs expected price over time\n"
+        "2. Off-price clustering by hour/weekday\n"
+        "3. Highest-density anomaly buckets"
+    )
     return
 
 
 @app.cell
-def _(pl, sqlite3):
-    _conn = sqlite3.connect("coffee.db")
-    df = (
-        pl.read_database(
-            """
-        SELECT
-            t.id as txn_id, t.date, t.occurred_at,
-            t.cash_type, t.amount, t.currency,
-            t.machine_id, t.location_id, t.product_id,
-            p.name as product_name,
-            l.name as location_name,
-            m.name as machine_name
-        FROM "transaction" t
-        JOIN product p ON p.id = t.product_id
-        JOIN location l ON l.id = t.location_id
-        JOIN machine m ON m.id = t.machine_id
-        ORDER BY t.occurred_at
+def _(pl, query_df, resolve_vending_db_paths):
+    db_paths = resolve_vending_db_paths()
+
+    run_df = query_df(
+        db_paths.analysis_db,
+        """
+        SELECT id, seed_start_date, seed_end_date, created_at
+        FROM sim_run
+        ORDER BY created_at DESC
         """,
-            _conn,
+    )
+
+    tx_df = (
+        query_df(
+            db_paths.analysis_db,
+            """
+            SELECT
+                t.run_id,
+                t.date,
+                t.occurred_at,
+                t.location_id,
+                t.machine_id,
+                t.product_id,
+                t.cash_type,
+                t.amount,
+                t.expected_price,
+                t.currency,
+                p.name AS product_name,
+                l.name AS location_name,
+                m.name AS machine_name
+            FROM sim_transaction_expanded t
+            JOIN facts.product p ON p.id = t.product_id
+            JOIN facts.location l ON l.id = t.location_id
+            JOIN facts.machine m ON m.id = t.machine_id
+            ORDER BY t.occurred_at
+            """,
+            attachments={"facts": db_paths.facts_db},
         )
         .with_columns(
             pl.col("date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
@@ -56,332 +75,220 @@ def _(pl, sqlite3):
         .with_columns(
             pl.col("occurred_at").dt.hour().alias("hour"),
             pl.col("occurred_at").dt.weekday().alias("weekday"),
+            pl.when(pl.col("expected_price") > 0)
+            .then(
+                (pl.col("amount") - pl.col("expected_price")) / pl.col("expected_price")
+            )
+            .otherwise(None)
+            .alias("delta_pct"),
         )
     )
-    _conn.close()
-    return (df,)
+
+    return run_df, tx_df
 
 
 @app.cell
-def _(df, mo):
-    _locations = sorted(df["location_name"].unique().to_list())
-    location_dropdown = mo.ui.dropdown(
-        options=_locations, value=_locations[0], label="Location"
+def _(mo, run_df):
+    run_options = run_df["id"].to_list()
+    run_select = mo.ui.dropdown(
+        options=run_options, value=run_options[0], label="Run ID"
     )
-    location_dropdown
-    return (location_dropdown,)
+    run_select
+    return (run_select,)
 
 
 @app.cell
-def _(df, location_dropdown, pl):
-    # Card transactions only — cash has its own rounding dynamics
-    loc_df = df.filter(
-        (pl.col("location_name") == location_dropdown.value)
-        & (pl.col("cash_type") == "card")
-    )
-    currency = loc_df["currency"][0] if loc_df.height > 0 else "?"
+def _(mo, pl, run_select, tx_df):
+    run_tx_df = tx_df.filter(pl.col("run_id") == run_select.value)
 
-    top_product = (
-        loc_df.group_by("product_name")
+    location_options = run_tx_df["location_name"].unique().sort().to_list()
+    location_select = mo.ui.dropdown(
+        options=location_options,
+        value=location_options[0],
+        label="Location",
+    )
+    location_select
+    return location_select, run_tx_df
+
+
+@app.cell
+def _(location_select, mo, pl, run_tx_df):
+    location_tx_df = run_tx_df.filter(pl.col("location_name") == location_select.value)
+    mo.stop(
+        location_tx_df.height == 0,
+        mo.callout(mo.md("No transactions found for this run/location."), kind="warn"),
+    )
+
+    machine_options = location_tx_df["machine_name"].unique().sort().to_list()
+    machine_select = mo.ui.dropdown(
+        options=machine_options,
+        value=machine_options[0],
+        label="Machine",
+    )
+    machine_select
+    return location_tx_df, machine_select
+
+
+@app.cell
+def _(location_tx_df, machine_select, mo, pl):
+    machine_tx_df = location_tx_df.filter(
+        pl.col("machine_name") == machine_select.value
+    )
+
+    product_options = (
+        machine_tx_df.group_by("product_name")
         .agg(pl.len().alias("n"))
-        .sort("n", descending=True)
-        .head(1)["product_name"][0]
+        .sort("n", descending=True)["product_name"]
+        .to_list()
     )
-    product_df = loc_df.filter(pl.col("product_name") == top_product)
-    return currency, product_df, top_product
+    product_select = mo.ui.dropdown(
+        options=product_options,
+        value=product_options[0],
+        label="Product",
+    )
+    product_select
+    return machine_tx_df, product_select
 
 
-# ── Step 1: Detect price seasons ─────────────────────────────────────────────
+@app.cell
+def _(machine_tx_df, pl, product_select):
+    product_tx_df = machine_tx_df.filter(pl.col("product_name") == product_select.value)
+
+    off_price_df = product_tx_df.filter(
+        pl.col("delta_pct").is_not_null() & (pl.col("delta_pct").abs() >= 0.05)
+    )
+    return off_price_df, product_tx_df
+
+
 @app.cell(hide_code=True)
-def _(currency, mo, product_df, top_product):
-    _n = product_df.height
-    _prices = product_df["amount"].unique().sort().to_list()
-    mo.md(f"""
-    ---
-    ## Step 1: Detect price seasons for **{top_product}**
-
-    {_n:,} card transactions, distinct prices: **{", ".join(f"{p:.2f}" for p in _prices)}** {currency}
-    """)
+def _(mo, off_price_df, product_select, product_tx_df):
+    off_pct = (
+        off_price_df.height / product_tx_df.height * 100
+        if product_tx_df.height > 0
+        else 0.0
+    )
+    mo.md(
+        f"## {product_select.value}\n\n"
+        f"- Total transactions: **{product_tx_df.height:,}**\n"
+        f"- Off-price rows (>=5% delta): **{off_price_df.height:,} ({off_pct:.1f}%)**"
+    )
     return
 
 
 @app.cell
-def _(alt, currency, mo, product_df):
-    _chart = (
-        alt.Chart(product_df)
-        .mark_circle(size=12, opacity=0.4)
+def _(alt, mo, product_tx_df):
+    price_points = (
+        alt.Chart(product_tx_df)
+        .mark_circle(size=24, opacity=0.45)
         .encode(
-            x=alt.X("occurred_at:T", title="Date"),
-            y=alt.Y(
-                "amount:Q", title=f"Price ({currency})", scale=alt.Scale(zero=False)
-            ),
+            x=alt.X("occurred_at:T", title="Timestamp"),
+            y=alt.Y("amount:Q", title="Charged price"),
+            color=alt.Color("cash_type:N", title="Payment type"),
             tooltip=[
                 "occurred_at:T",
-                alt.Tooltip("amount:Q", format=",.2f"),
                 "machine_name",
+                "cash_type",
+                alt.Tooltip("amount:Q", format=",.2f"),
+                alt.Tooltip("expected_price:Q", format=",.2f"),
+                alt.Tooltip("delta_pct:Q", format="+.1%"),
             ],
         )
-        .properties(
-            title="All card transaction prices over time", width=700, height=250
+    )
+
+    expected_line = (
+        alt.Chart(product_tx_df)
+        .mark_line(color="#e8590c", strokeWidth=2)
+        .encode(
+            x=alt.X("occurred_at:T", title="Timestamp"),
+            y=alt.Y("expected_price:Q", title="Expected price"),
         )
     )
-    mo.ui.altair_chart(_chart)
+
+    mo.ui.altair_chart(
+        (price_points + expected_line).properties(
+            width=780,
+            height=320,
+            title="Charged vs expected price over time",
+        )
+    )
     return
 
 
 @app.cell
-def _(pl, product_df):
-    # Daily modal price, then group consecutive days with same modal into eras
-    _daily = (
-        product_df.group_by("date")
-        .agg(pl.col("amount").mode().first().alias("modal_price"), pl.len().alias("n"))
-        .sort("date")
-        .to_dicts()
+def _(alt, mo, off_price_df, pl):
+    mo.stop(
+        off_price_df.height == 0,
+        mo.callout(
+            mo.md("No off-price rows for this product selection."), kind="success"
+        ),
     )
 
-    _eras = []
-    _cur = {
-        "price": _daily[0]["modal_price"],
-        "start": _daily[0]["date"],
-        "end": _daily[0]["date"],
-        "days": 1,
-    }
-    for r in _daily[1:]:
-        if r["modal_price"] == _cur["price"]:
-            _cur["end"] = r["date"]
-            _cur["days"] += 1
-        else:
-            _eras.append(_cur)
-            _cur = {
-                "price": r["modal_price"],
-                "start": r["date"],
-                "end": r["date"],
-                "days": 1,
-            }
-    _eras.append(_cur)
+    hourly_df = off_price_df.group_by("hour", "cash_type").agg(pl.len().alias("count"))
 
-    # Merge short blips (<5 days) into their neighbors
-    MIN_SEASON_DAYS = 5
-    seasons = []
-    for era in _eras:
-        if era["days"] >= MIN_SEASON_DAYS:
-            seasons.append(era.copy())
-        elif seasons:
-            # Blip — extend previous season's end date through it
-            seasons[-1]["end"] = era["end"]
-            seasons[-1]["days"] += era["days"]
-
-    seasons_df = pl.DataFrame(seasons).rename(
-        {
-            "price": "season_price",
-            "start": "start_date",
-            "end": "end_date",
-            "days": "n_days",
-        }
-    )
-    return MIN_SEASON_DAYS, seasons, seasons_df
-
-
-@app.cell
-def _(alt, currency, mo, seasons_df):
-    mo.md(f"### Price seasons ({seasons_df.height} detected)")
-
-    _chart = (
-        alt.Chart(seasons_df)
+    hourly_chart = (
+        alt.Chart(hourly_df)
         .mark_bar()
         .encode(
-            x=alt.X("start_date:T", title="Date"),
-            x2="end_date:T",
-            y=alt.value(20),
-            color=alt.Color("season_price:N", title=f"Price ({currency})"),
-            tooltip=[
-                alt.Tooltip("season_price:Q", format=",.2f", title="Price"),
-                "start_date:T",
-                "end_date:T",
-                "n_days",
-            ],
+            x=alt.X("hour:O", title="Hour"),
+            y=alt.Y("count:Q", title="Off-price count"),
+            color=alt.Color("cash_type:N", title="Payment type"),
+            tooltip=["hour", "cash_type", "count"],
         )
-        .properties(title="Price season timeline", width=700, height=80)
+        .properties(width=780, height=220, title="Off-price clustering by hour")
     )
-    mo.ui.altair_chart(_chart)
-    mo.ui.table(seasons_df)
-    return
 
-
-# ── Step 2: Within each season, check hour/weekday variation ─────────────────
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ---
-    ## Step 2: Within each price season, does hour or weekday matter?
-
-    If hour/weekday drive price, we'd see different prices clustering at specific
-    times *within* a single season. If not, all off-price transactions are just noise.
-    """)
+    mo.ui.altair_chart(hourly_chart)
     return
 
 
 @app.cell
-def _(mo, seasons_df):
-    _options = {
-        f"{r['season_price']:.2f} ({r['start_date']} to {r['end_date']}, {r['n_days']}d)": i
-        for i, r in enumerate(seasons_df.iter_rows(named=True))
-    }
-    season_picker = mo.ui.dropdown(
-        options=_options,
-        value=list(_options.keys())[0],
-        label="Select season",
-    )
-    season_picker
-    return (season_picker,)
+def _(alt, mo, off_price_df, pl):
+    mo.stop(off_price_df.height == 0, None)
 
+    dow_labels = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
 
-@app.cell
-def _(currency, mo, pl, product_df, season_picker, seasons_df):
-    _row = seasons_df.row(season_picker.value, named=True)
-    _start = _row["start_date"]
-    _end = _row["end_date"]
-    season_price = _row["season_price"]
-
-    season_df = product_df.filter((pl.col("date") >= _start) & (pl.col("date") <= _end))
-    _n = season_df.height
-    _n_match = season_df.filter(pl.col("amount") == season_price).height
-    _n_off = _n - _n_match
-    _off_pct = _n_off / _n * 100 if _n > 0 else 0
-
-    mo.md(f"""
-    **Season:** {season_price:.2f} {currency} &nbsp;|&nbsp; {_start} to {_end}
-    &nbsp;|&nbsp; {_n:,} transactions &nbsp;|&nbsp; **{_n_off}** off-price ({_off_pct:.1f}%)
-    """)
-    return season_df, season_price
-
-
-@app.cell
-def _(alt, currency, mo, pl, season_df, season_price):
-    # Price by hour within this season
-    _hourly = (
-        season_df.group_by("hour", "amount")
-        .agg(pl.len().alias("count"))
-        .sort("hour", "amount")
-    )
-    _chart = (
-        alt.Chart(_hourly)
-        .mark_bar()
-        .encode(
-            x=alt.X("hour:O", title="Hour of Day"),
-            y=alt.Y("count:Q", title="# Transactions"),
-            color=alt.Color("amount:N", title=f"Price ({currency})"),
-            tooltip=["hour", alt.Tooltip("amount:N", title="Price"), "count"],
-        )
-        .properties(
-            title=f"Within season ({season_price:.2f}): price by hour",
-            width=600,
-            height=250,
-        )
-    )
-    mo.ui.altair_chart(_chart)
-    return
-
-
-@app.cell
-def _(alt, currency, mo, pl, season_df, season_price):
-    # Price by weekday within this season
-    _dow_labels = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
-    _dow = (
-        season_df.group_by("weekday", "amount")
+    weekday_df = (
+        off_price_df.group_by("weekday")
         .agg(pl.len().alias("count"))
         .with_columns(
             pl.col("weekday")
-            .replace_strict(_dow_labels, return_dtype=pl.Utf8)
-            .alias("day_name")
+            .replace_strict(dow_labels, return_dtype=pl.Utf8)
+            .alias("weekday_name")
         )
-        .sort("weekday", "amount")
+        .sort("weekday")
     )
-    _chart = (
-        alt.Chart(_dow)
-        .mark_bar()
+
+    weekday_chart = (
+        alt.Chart(weekday_df)
+        .mark_bar(color="#4263eb")
         .encode(
-            x=alt.X("day_name:N", sort=list(_dow_labels.values()), title="Day of Week"),
-            y=alt.Y("count:Q", title="# Transactions"),
-            color=alt.Color("amount:N", title=f"Price ({currency})"),
-            tooltip=["day_name", alt.Tooltip("amount:N", title="Price"), "count"],
+            x=alt.X("weekday_name:N", sort=list(dow_labels.values()), title="Weekday"),
+            y=alt.Y("count:Q", title="Off-price count"),
+            tooltip=["weekday_name", "count"],
         )
-        .properties(
-            title=f"Within season ({season_price:.2f}): price by weekday",
-            width=500,
-            height=250,
-        )
+        .properties(width=520, height=220, title="Off-price clustering by weekday")
     )
-    mo.ui.altair_chart(_chart)
-    return
 
-
-# ── Step 3: Root-cause off-price transactions ────────────────────────────────
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ---
-    ## Step 3: Root-cause off-price transactions
-    """)
+    mo.ui.altair_chart(weekday_chart)
     return
 
 
 @app.cell
-def _(currency, mo, pl, season_df, season_price, top_product):
-    _off = season_df.filter(pl.col("amount") != season_price)
+def _(mo, off_price_df, pl):
+    mo.stop(off_price_df.height == 0, None)
 
-    if _off.height == 0:
-        mo.callout(
-            mo.md(
-                f"Every transaction in this season is at **{season_price:.2f} {currency}** — no anomalies."
-            ),
-            kind="success",
+    bucket_df = (
+        off_price_df.group_by("machine_name", "date", "cash_type")
+        .agg(
+            pl.len().alias("off_price_count"),
+            pl.col("delta_pct").mean().alias("avg_delta_pct"),
+            pl.col("delta_pct").min().alias("worst_delta_pct"),
         )
-    else:
-        _by_price = (
-            _off.group_by("amount")
-            .agg(pl.len().alias("count"))
-            .sort("count", descending=True)
-        )
-        _by_machine = (
-            _off.group_by("machine_name")
-            .agg(pl.len().alias("count"))
-            .sort("count", descending=True)
-        )
-        _by_date = _off.group_by("date").agg(pl.len().alias("count")).sort("date")
+        .sort("off_price_count", descending=True)
+    )
 
-        _price_str = ", ".join(
-            f"{r['amount']:.2f} ({r['count']}x)"
-            for r in _by_price.iter_rows(named=True)
-        )
-        _machine_str = ", ".join(
-            f"{r['machine_name']} ({r['count']}x)"
-            for r in _by_machine.iter_rows(named=True)
-        )
-
-        # Check if anomalies cluster on specific dates (suggesting a brief price test)
-        _date_list = _by_date["date"].to_list()
-        _consecutive = len(_date_list) > 1 and all(
-            (_date_list[i] - _date_list[i - 1]).days <= 2
-            for i in range(1, len(_date_list))
-        )
-
-        mo.callout(
-            mo.md(f"""
-            **{_off.height}** off-price transactions for {top_product} in this season:
-
-            - Prices: {_price_str} {currency}
-            - Machines: {_machine_str}
-            - Dates: {_date_list[0]} to {_date_list[-1]} ({len(_date_list)} days)
-            - {"Dates are consecutive — looks like a brief price change or rollout" if _consecutive else "Dates are scattered — looks like random glitches"}
-            """),
-            kind="warn",
-        )
-        mo.ui.table(
-            _off.select(
-                "date", "occurred_at", "amount", "machine_name", "hour", "weekday"
-            ).sort("occurred_at")
-        )
+    mo.md("## Highest-density anomaly buckets")
+    mo.ui.table(bucket_df.head(120))
     return
 
 

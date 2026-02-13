@@ -6,317 +6,232 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import altair as alt
     import marimo as mo
     import polars as pl
-    import altair as alt
-    import sqlite3
 
-    return alt, mo, pl, sqlite3
+    from notebook_db import query_df, resolve_vending_db_paths
 
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    # Prediction Accuracy: Daily Projections vs Actual Sales
-
-    How well does the SARIMAX forecast track against real outcomes?
-    This notebook compares `daily_projections` forecasts with `dailyproductsales` actuals,
-    and visualises the forecast alongside recent history for a sanity check.
-    """)
-    return
-
-
-@app.cell
-def _(pl, sqlite3):
-    _conn = sqlite3.connect("coffee.db")
-
-    projections_df = pl.read_database(
-        """
-        SELECT
-            dp.forecast_date, dp.projection_date,
-            dp.forecast_units, dp.model_name, dp.used_price_data,
-            dp.product_id, dp.location_id, dp.machine_id,
-            dp.is_long_tail, dp.product_rank,
-            p.name  AS product,
-            l.name  AS location,
-            m.name  AS machine
-        FROM daily_projections dp
-        JOIN product  p ON p.id = dp.product_id
-        JOIN location l ON l.id = dp.location_id
-        JOIN machine  m ON m.id = dp.machine_id
-        ORDER BY dp.forecast_date
-        """,
-        _conn,
-    ).with_columns(
-        pl.col("forecast_date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
-        pl.col("projection_date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
-    )
-
-    # Actuals: aggregate across cash_type so we get total units per day/product/location
-    actuals_df = pl.read_database(
-        """
-        SELECT
-            dps.date, dps.product_id, dps.location_id,
-            SUM(dps.units_sold) AS actual_units,
-            p.name  AS product,
-            l.name  AS location
-        FROM dailyproductsales dps
-        JOIN product  p ON p.id = dps.product_id
-        JOIN location l ON l.id = dps.location_id
-        GROUP BY dps.date, dps.product_id, dps.location_id
-        ORDER BY dps.date
-        """,
-        _conn,
-    ).with_columns(
-        pl.col("date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
-    )
-
-    _conn.close()
-    return actuals_df, projections_df
-
-
-@app.cell
-def _(mo, projections_df):
-    _locations = sorted(projections_df["location"].unique().to_list())
-    location_dd = mo.ui.dropdown(
-        options=_locations, value=_locations[0], label="Location"
-    )
-
-    _products = sorted(projections_df["product"].unique().to_list())
-    product_dd = mo.ui.dropdown(options=_products, value=_products[0], label="Product")
-
-    mo.hstack([location_dd, product_dd])
-    return location_dd, product_dd
-
-
-@app.cell
-def _(actuals_df, location_dd, pl, product_dd, projections_df):
-    # Filter projections to selected product/location
-    proj_filtered = projections_df.filter(
-        (pl.col("product") == product_dd.value)
-        & (pl.col("location") == location_dd.value)
-    )
-
-    # Filter actuals to same product/location
-    act_filtered = actuals_df.filter(
-        (pl.col("product") == product_dd.value)
-        & (pl.col("location") == location_dd.value)
-    )
-
-    # Join on date where overlap exists
-    compared_df = proj_filtered.join(
-        act_filtered.select(
-            pl.col("date").alias("forecast_date"),
-            "actual_units",
-            pl.col("product_id").alias("_pid"),
-            pl.col("location_id").alias("_lid"),
-        ),
-        on="forecast_date",
-        how="left",
-    ).with_columns(
-        (pl.col("forecast_units") - pl.col("actual_units")).alias("error"),
-        ((pl.col("forecast_units") - pl.col("actual_units")).abs()).alias("abs_error"),
-    )
-
-    has_overlap = compared_df.filter(pl.col("actual_units").is_not_null()).height > 0
-    return act_filtered, compared_df, has_overlap, proj_filtered
-
-
-@app.cell(hide_code=True)
-def _(compared_df, has_overlap, mo, pl):
-    if not has_overlap:
-        mo.md(
-            """
-            > **No overlapping dates yet.** Forecasts start after the last day of
-            > actual sales data. Once new sales are loaded, accuracy metrics will
-            > appear here automatically.
-            """
-        )
-    else:
-        _overlap = compared_df.filter(pl.col("actual_units").is_not_null())
-        _n = _overlap.height
-        _mae = _overlap["abs_error"].mean()
-        _rmse = (_overlap["error"].pow(2).mean()) ** 0.5
-        # MAPE: avoid div-by-zero
-        _mape_df = _overlap.filter(pl.col("actual_units") > 0).with_columns(
-            (pl.col("abs_error") / pl.col("actual_units") * 100).alias("ape")
-        )
-        _mape = _mape_df["ape"].mean() if _mape_df.height > 0 else None
-        _bias = _overlap["error"].mean()
-
-        _mape_str = f"{_mape:.1f}%" if _mape is not None else "N/A"
-        mo.md(f"""
-        ## Accuracy Metrics ({_n} overlapping days)
-
-        | Metric | Value | What it means |
-        |--------|-------|---------------|
-        | MAE | **{_mae:.2f}** units | Average size of miss — lower is better |
-        | RMSE | **{_rmse:.2f}** units | Like MAE but penalises large misses more heavily |
-        | MAPE | **{_mape_str}** | Average miss as a % of actual sales — scale-independent |
-        | Bias | **{_bias:+.2f}** units | Positive = consistently over-forecasting, negative = under |
-        """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(alt, compared_df, has_overlap, mo, pl):
-    if has_overlap:
-        _overlap = compared_df.filter(pl.col("actual_units").is_not_null())
-        _max_val = (
-            max(
-                _overlap["forecast_units"].max(),
-                _overlap["actual_units"].max(),
-            )
-            * 1.1
-        )
-
-        _perfect = (
-            alt.Chart(pl.DataFrame({"x": [0.0, _max_val], "y": [0.0, _max_val]}))
-            .mark_line(strokeDash=[4, 4], color="grey")
-            .encode(x="x:Q", y="y:Q")
-        )
-
-        _scatter = (
-            alt.Chart(_overlap)
-            .mark_circle(size=50)
-            .encode(
-                x=alt.X("actual_units:Q", title="Actual units sold"),
-                y=alt.Y("forecast_units:Q", title="Forecast units"),
-                color="machine:N",
-                tooltip=[
-                    "forecast_date:T",
-                    "machine:N",
-                    alt.Tooltip("forecast_units:Q", format=",.1f"),
-                    alt.Tooltip("actual_units:Q", format=",.0f"),
-                    alt.Tooltip("error:Q", format="+,.1f"),
-                ],
-            )
-        )
-
-        _chart = (_perfect + _scatter).properties(
-            title="Forecast vs Actual (perfect = diagonal line)",
-            width=450,
-            height=400,
-        )
-        mo.ui.altair_chart(_chart)
-    return
+    return alt, mo, pl, query_df, resolve_vending_db_paths
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ---
-    ## Prediction Accuracy by Product (1-day vs 7-day horizon)
+    # Prediction Accuracy
 
-    How does accuracy degrade as we forecast further out?
-    Each projection run produces forecasts 1–10 days ahead. This table compares
-    **1-day-ahead** and **7-day-ahead** accuracy per product for the selected location.
-
-    | Column | Meaning |
-    |--------|---------|
-    | **MAE** | Average miss in units — lower is better |
-    | **RMSE** | Like MAE but penalises large misses more heavily |
-    | **bias** | Positive = over-forecasting, negative = under |
-    | **MAPE_%** | Average miss as a % of actual — scale-independent |
-    | **n_obs** | Number of forecast/actual pairs used |
+    "
+        "Compares `sim_daily_projection` (forecast) vs `daily_product_sales` (actual).
+    "
+        "Focus: overlap health, horizon metrics, time-series fit, scatter fit.
     """)
     return
 
 
 @app.cell
-def _(actuals_df, location_dd, mo, pl, projections_df):
-    # Compute horizon = forecast_date - projection_date (in days)
-    # Sum forecast across machines per (projection_date, forecast_date, product, location)
-    _proj_with_horizon = (
-        projections_df.filter(pl.col("location") == location_dd.value)
+def _(pl, query_df, resolve_vending_db_paths):
+    db_paths = resolve_vending_db_paths()
+
+    run_df = query_df(
+        db_paths.analysis_db,
+        """
+        SELECT id, seed_start_date, seed_end_date, created_at
+        FROM sim_run
+        ORDER BY created_at DESC
+        """,
+    )
+
+    projection_df = (
+        query_df(
+            db_paths.analysis_db,
+            """
+            SELECT
+                p.run_id,
+                p.projection_date,
+                p.forecast_date,
+                p.location_id,
+                p.machine_id,
+                p.product_id,
+                p.forecast_units,
+                p.model_name,
+                p.used_price_data,
+                prod.name AS product_name,
+                loc.name AS location_name,
+                mach.name AS machine_name
+            FROM sim_daily_projection p
+            JOIN facts.product prod ON prod.id = p.product_id
+            JOIN facts.location loc ON loc.id = p.location_id
+            JOIN facts.machine mach ON mach.id = p.machine_id
+            WHERE p.product_id IS NOT NULL
+            """,
+            attachments={"facts": db_paths.facts_db},
+        )
+        .with_columns(
+            pl.col("projection_date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
+            pl.col("forecast_date").cast(pl.Utf8).str.to_date("%Y-%m-%d"),
+        )
         .with_columns(
             (pl.col("forecast_date") - pl.col("projection_date"))
             .dt.total_days()
             .cast(pl.Int32)
-            .alias("horizon"),
+            .alias("horizon_days")
         )
-        .group_by("projection_date", "forecast_date", "horizon", "product", "location")
-        .agg(pl.col("forecast_units").sum().alias("forecast_total"))
     )
 
-    # Join with actuals on date + product + location names (avoids ID type mismatches)
-    _act_for_join = actuals_df.filter(pl.col("location") == location_dd.value).select(
-        pl.col("date"),
-        "product",
-        "location",
-        "actual_units",
-    )
-
-    _with_actuals = _proj_with_horizon.join(
-        _act_for_join,
-        left_on=["forecast_date", "product", "location"],
-        right_on=["date", "product", "location"],
-        how="inner",
-    ).with_columns(
-        (pl.col("forecast_total") - pl.col("actual_units")).alias("error"),
-        (pl.col("forecast_total") - pl.col("actual_units")).abs().alias("abs_error"),
-    )
-
-    def _metrics_for_horizon(df, h):
-        _h = df.filter(pl.col("horizon") == h)
-        if _h.height == 0:
-            return pl.DataFrame()
-        return _h.group_by("product").agg(
-            pl.lit(h).alias("horizon_days"),
-            pl.col("abs_error").mean().round(2).alias("MAE"),
-            (pl.col("error").pow(2).mean().sqrt()).round(2).alias("RMSE"),
-            pl.col("error").mean().round(2).alias("bias"),
-            (
-                pl.when(pl.col("actual_units") > 0)
-                .then(pl.col("abs_error") / pl.col("actual_units") * 100)
-                .otherwise(None)
-            )
-            .mean()
-            .round(1)
-            .alias("MAPE_%"),
-            pl.col("error").len().alias("n_obs"),
+    actual_df = (
+        query_df(
+            db_paths.observed_db,
+            """
+            SELECT
+                s.date,
+                s.location_id,
+                s.machine_id,
+                s.product_id,
+                SUM(s.units_sold) AS actual_units
+            FROM daily_product_sales s
+            GROUP BY s.date, s.location_id, s.machine_id, s.product_id
+            """,
         )
+        .with_columns(pl.col("date").cast(pl.Utf8).str.to_date("%Y-%m-%d"))
+        .rename({"date": "forecast_date"})
+    )
+    return actual_df, projection_df, run_df
 
-    _h1 = _metrics_for_horizon(_with_actuals, 1)
-    _h7 = _metrics_for_horizon(_with_actuals, 7)
 
-    _combined = pl.concat([df for df in [_h1, _h7] if df.height > 0])
+@app.cell
+def _(mo, run_df):
+    run_options = run_df["id"].to_list()
+    run_select = mo.ui.dropdown(
+        options=run_options, value=run_options[0], label="Run ID"
+    )
+    run_select
+    return (run_select,)
 
-    if _combined.height > 0:
-        accuracy_by_horizon = _combined.sort("product", "horizon_days")
-        mo.ui.table(accuracy_by_horizon)
-    else:
-        mo.md("> No overlapping actuals for 1-day or 7-day horizons yet.")
-        accuracy_by_horizon = pl.DataFrame()
-    return (accuracy_by_horizon,)
+
+@app.cell
+def _(mo, pl, projection_df, run_select):
+    run_projection_df = projection_df.filter(pl.col("run_id") == run_select.value)
+
+    location_options = run_projection_df["location_name"].unique().sort().to_list()
+    location_select = mo.ui.dropdown(
+        options=location_options,
+        value=location_options[0],
+        label="Location",
+    )
+    location_select
+    return location_select, run_projection_df
+
+
+@app.cell
+def _(location_select, mo, pl, run_projection_df):
+    location_projection_df = run_projection_df.filter(
+        pl.col("location_name") == location_select.value
+    )
+
+    machine_options = location_projection_df["machine_name"].unique().sort().to_list()
+    machine_select = mo.ui.dropdown(
+        options=machine_options,
+        value=machine_options[0],
+        label="Machine",
+    )
+    machine_select
+    return location_projection_df, machine_select
+
+
+@app.cell
+def _(location_projection_df, machine_select, mo, pl):
+    machine_projection_df = location_projection_df.filter(
+        pl.col("machine_name") == machine_select.value
+    )
+
+    product_options = machine_projection_df["product_name"].unique().sort().to_list()
+    product_select = mo.ui.dropdown(
+        options=product_options,
+        value=product_options[0],
+        label="Product",
+    )
+    product_select
+    return machine_projection_df, product_select
+
+
+@app.cell
+def _(actual_df, machine_projection_df, pl, product_select):
+    compared_df = (
+        machine_projection_df
+        .filter(
+            (pl.col("product_name") == product_select.value)
+            & (pl.col("horizon_days") >= 1)
+        )
+        .join(
+            actual_df,
+            on=["forecast_date", "location_id", "machine_id", "product_id"],
+            how="left",
+        )
+        .with_columns(
+            (pl.col("forecast_units") - pl.col("actual_units")).alias("error"),
+            (pl.col("forecast_units") - pl.col("actual_units"))
+            .abs()
+            .alias("abs_error"),
+        )
+    )
+
+    overlap_df = compared_df.filter(pl.col("actual_units").is_not_null())
+    has_overlap = overlap_df.height > 0
+    return compared_df, has_overlap, overlap_df
 
 
 @app.cell(hide_code=True)
-def _(accuracy_by_horizon, alt, mo, pl):
-    if accuracy_by_horizon.height > 0:
-        _melted = accuracy_by_horizon.unpivot(
-            index=["product", "horizon_days"],
-            on=["MAE", "RMSE"],
-        ).with_columns(pl.col("horizon_days").cast(pl.Utf8).alias("horizon"))
+def _(compared_df, has_overlap, mo, overlap_df, pl):
+    mo.stop(
+        compared_df.height == 0,
+        mo.callout(
+            mo.md("No forecast rows for this run/location/machine/product selection."),
+            kind="warn",
+        ),
+    )
 
-        _chart = (
-            alt.Chart(_melted)
-            .mark_bar()
-            .encode(
-                x=alt.X("product:N", title="Product"),
-                y=alt.Y("value:Q", title="Units"),
-                color="horizon:N",
-                xOffset="horizon:N",
-                column=alt.Column("variable:N", title="Metric"),
-                tooltip=[
-                    "product:N",
-                    "horizon:N",
-                    alt.Tooltip("value:Q", format=",.2f"),
-                ],
-            )
-            .properties(width=300, height=250)
-        )
-        mo.ui.altair_chart(_chart)
+    min_horizon = int(compared_df["horizon_days"].min())
+    max_horizon = int(compared_df["horizon_days"].max())
+    forecast_start = compared_df["forecast_date"].min()
+    forecast_end = compared_df["forecast_date"].max()
+
+    mo.md(
+        f"## Alignment Check\n\n"
+        f"- Join keys: `forecast_date + location_id + machine_id + product_id`\n"
+        f"- Forecast window in selection: **{forecast_start}** to **{forecast_end}**\n"
+        f"- Horizon range in selection: **{min_horizon}** to **{max_horizon}** days"
+    )
+
+    mo.stop(
+        not has_overlap,
+        mo.callout(
+            mo.md("No forecast/actual overlap for this selection yet."), kind="warn"
+        ),
+    )
+
+    mae = float(overlap_df["abs_error"].mean())
+    rmse = float((overlap_df["error"].pow(2).mean()) ** 0.5)
+    bias = float(overlap_df["error"].mean())
+    actual_mean = float(overlap_df["actual_units"].mean())
+    actual_std_raw = overlap_df["actual_units"].std()
+    actual_std = float(actual_std_raw) if actual_std_raw is not None else 0.0
+
+    mape_df = overlap_df.filter(pl.col("actual_units") > 0).with_columns(
+        (pl.col("abs_error") / pl.col("actual_units") * 100).alias("ape")
+    )
+    mape = float(mape_df["ape"].mean()) if mape_df.height > 0 else None
+    mape_text = f"{mape:.1f}%" if mape is not None else "N/A"
+
+    mo.md(
+        f"## Accuracy Snapshot\n\n"
+        f"- Overlap rows: **{overlap_df.height:,}**\n"
+        f"- MAE: **{mae:.2f}**\n"
+        f"- RMSE: **{rmse:.2f}**\n"
+        f"- Bias: **{bias:+.2f}**\n"
+        f"- MAPE: **{mape_text}**\n"
+        f"- Actual mean: **{actual_mean:.2f}**\n"
+        f"- Actual std dev: **{actual_std:.2f}**\n\n"
+    )
     return
 
 
@@ -324,118 +239,96 @@ def _(accuracy_by_horizon, alt, mo, pl):
 def _(mo):
     mo.md("""
     ---
-    ## Each 10-Day Prediction vs Actuals
-
-    Every thin line is one projection run's 10-day forecast.
-    The **bold blue line** is actual daily sales, and the **dashed red line** is the
-    7-day rolling average of actuals.
+    ## Metrics by Horizon
     """)
     return
 
 
 @app.cell
-def _(act_filtered, alt, mo, pl, proj_filtered):
-    # Sum across machines per (projection_date, forecast_date) → one line per run
-    _proj_lines = (
-        proj_filtered.group_by("projection_date", "forecast_date")
-        .agg(pl.col("forecast_units").sum().alias("forecast_total"))
-        .sort("projection_date", "forecast_date")
-        .with_columns(
-            pl.col("projection_date").cast(pl.Utf8).alias("run"),
+def _(compared_df, mo, pl):
+    horizon_metrics_df = (
+        compared_df
+        .filter(pl.col("actual_units").is_not_null())
+        .group_by("horizon_days")
+        .agg(
+            pl.len().alias("n_obs"),
+            pl.col("abs_error").mean().alias("mae"),
+            (pl.col("error").pow(2).mean() ** 0.5).alias("rmse"),
+            pl.col("error").mean().alias("bias"),
         )
+        .sort("horizon_days")
     )
 
-    # Actuals with 7-day rolling average
-    _actuals = act_filtered.sort("date").with_columns(
-        pl.col("actual_units").rolling_mean(window_size=7).alias("rolling_7d"),
+    mo.ui.table(horizon_metrics_df)
+    return
+
+
+@app.cell
+def _(compared_df, mo):
+    horizon_options = (
+        compared_df["horizon_days"].drop_nulls().unique().sort().to_list()
+        if compared_df.height > 0
+        else [1]
+    )
+    horizon_select = mo.ui.dropdown(
+        options=horizon_options,
+        value=horizon_options[0],
+        label="Horizon (days)",
+    )
+    horizon_select
+    return (horizon_select,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ---
+    ## Time-Series Comparison
+    """)
+    return
+
+
+@app.cell
+def _(alt, compared_df, horizon_select, mo, pl):
+    horizon_slice_df = (
+        compared_df
+        .filter(
+            (pl.col("horizon_days") == int(horizon_select.value))
+            & pl.col("actual_units").is_not_null()
+        )
+        .select("forecast_date", "forecast_units", "actual_units")
+        .sort("forecast_date")
     )
 
-    # Window: from 60 days before earliest forecast through end
-    _forecast_min = _proj_lines["forecast_date"].min()
-    _act_cutoff = _forecast_min - pl.duration(days=60)
-    _actuals_window = _actuals.filter(pl.col("date") >= _act_cutoff)
+    mo.stop(
+        horizon_slice_df.height == 0,
+        mo.callout(mo.md("No overlap rows for this horizon."), kind="info"),
+    )
 
-    # Each projection run as a thin line
-    _spaghetti = (
-        alt.Chart(_proj_lines)
-        .mark_line(strokeWidth=0.8, opacity=0.35)
+    series_df = horizon_slice_df.unpivot(
+        index="forecast_date",
+        on=["forecast_units", "actual_units"],
+        variable_name="series",
+        value_name="units",
+    )
+
+    series_chart = (
+        alt
+        .Chart(series_df)
+        .mark_line(point=True)
         .encode(
             x=alt.X("forecast_date:T", title="Date"),
-            y=alt.Y("forecast_total:Q", title="Units"),
-            detail="run:N",
-            color=alt.value("#e45756"),
+            y=alt.Y("units:Q", title="Units"),
+            color=alt.Color("series:N", title="Series"),
             tooltip=[
-                alt.Tooltip("run:N", title="projection date"),
                 "forecast_date:T",
-                alt.Tooltip("forecast_total:Q", format=",.1f", title="forecast"),
+                "series",
+                alt.Tooltip("units:Q", format=",.2f"),
             ],
         )
+        .properties(width=760, height=320)
     )
-
-    # Actual daily sales — bold
-    _act_line = (
-        alt.Chart(_actuals_window)
-        .mark_line(color="steelblue", strokeWidth=2.5)
-        .encode(
-            x=alt.X("date:T"),
-            y=alt.Y("actual_units:Q"),
-            tooltip=["date:T", alt.Tooltip("actual_units:Q", format=",.0f")],
-        )
-    )
-
-    # 7-day rolling average
-    _roll_line = (
-        alt.Chart(_actuals_window.filter(pl.col("rolling_7d").is_not_null()))
-        .mark_line(color="pink", strokeWidth=2)
-        .encode(
-            x=alt.X("date:T"),
-            y=alt.Y("rolling_7d:Q"),
-            tooltip=[
-                "date:T",
-                alt.Tooltip("rolling_7d:Q", format=",.1f", title="7d avg"),
-            ],
-        )
-    )
-
-    _chart = (_act_line + _roll_line + _spaghetti).properties(
-        title="Each 10-day projection run (thin red) vs actuals (blue) & 7d avg (dashed red)",
-        width=750,
-        height=350,
-    )
-    mo.ui.altair_chart(_chart)
-    return
-
-
-@app.cell(hide_code=True)
-def _(alt, compared_df, has_overlap, mo, pl):
-    if has_overlap:
-        _overlap = compared_df.filter(pl.col("actual_units").is_not_null())
-        _chart = (
-            alt.Chart(_overlap)
-            .mark_bar()
-            .encode(
-                x=alt.X("forecast_date:T", title="Date"),
-                y=alt.Y("error:Q", title="Error (forecast − actual)"),
-                color=alt.condition(
-                    alt.datum.error > 0,
-                    alt.value("coral"),
-                    alt.value("steelblue"),
-                ),
-                tooltip=[
-                    "forecast_date:T",
-                    "machine:N",
-                    alt.Tooltip("forecast_units:Q", format=",.1f"),
-                    alt.Tooltip("actual_units:Q", format=",.0f"),
-                    alt.Tooltip("error:Q", format="+,.1f"),
-                ],
-            )
-            .properties(
-                title="Daily forecast error (positive = over-forecast)",
-                width=750,
-                height=250,
-            )
-        )
-        mo.ui.altair_chart(_chart)
+    mo.ui.altair_chart(series_chart)
     return
 
 
@@ -443,88 +336,59 @@ def _(alt, compared_df, has_overlap, mo, pl):
 def _(mo):
     mo.md("""
     ---
-    ## Forecast Summary by Product & Location
-
-    Compares the forecasted daily average against the recent historical daily average
-    (last 30 days of actuals) as a reasonableness check.
+    ## Scatter: Forecast vs Actual
     """)
     return
 
 
 @app.cell
-def _(actuals_df, mo, pl, projections_df):
-    # Recent 30-day average from actuals
-    _recent_cutoff = actuals_df["date"].max() - pl.duration(days=30)
-    _recent_avg = (
-        actuals_df.filter(pl.col("date") >= _recent_cutoff)
-        .group_by("product", "location")
-        .agg(
-            pl.col("actual_units").mean().alias("recent_30d_avg"),
-            pl.col("date").n_unique().alias("active_days"),
-        )
+def _(alt, compared_df, mo, pl):
+    overlap_scatter_df = compared_df.filter(pl.col("actual_units").is_not_null())
+
+    mo.stop(
+        overlap_scatter_df.height == 0,
+        mo.callout(mo.md("No overlap rows available."), kind="warn"),
     )
 
-    # Forecast daily average (sum across machines for same product/location/date, then average)
-    _forecast_avg = (
-        projections_df.group_by("forecast_date", "product", "location")
-        .agg(pl.col("forecast_units").sum())
-        .group_by("product", "location")
-        .agg(
-            pl.col("forecast_units").mean().alias("forecast_avg"),
-            pl.col("forecast_date").n_unique().alias("forecast_days"),
+    axis_max = float(
+        max(
+            overlap_scatter_df["forecast_units"].max(),
+            overlap_scatter_df["actual_units"].max(),
         )
+        * 1.1
+    )
+    parity_df = pl.DataFrame({
+        "actual_units": [0.0, axis_max],
+        "forecast_units": [0.0, axis_max],
+    })
+
+    parity_line = (
+        alt
+        .Chart(parity_df)
+        .mark_line(strokeDash=[5, 5], color="gray")
+        .encode(x="actual_units:Q", y="forecast_units:Q")
     )
 
-    _summary = (
-        _forecast_avg.join(_recent_avg, on=["product", "location"], how="left")
-        .with_columns(
-            (
-                (pl.col("forecast_avg") - pl.col("recent_30d_avg"))
-                / pl.col("recent_30d_avg")
-                * 100
-            ).alias("pct_diff"),
-        )
-        .sort("product", "location")
-    )
-    mo.ui.table(_summary)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ---
-    ## Per-Machine Forecast Breakdown
-
-    Daily forecast by machine for the selected product and location.
-    """)
-    return
-
-
-@app.cell
-def _(alt, mo, proj_filtered):
-    _chart = (
-        alt.Chart(proj_filtered)
-        .mark_line(point=alt.OverlayMarkDef(size=15))
+    scatter_chart = (
+        alt
+        .Chart(overlap_scatter_df)
+        .mark_circle(size=54, opacity=0.72)
         .encode(
-            x=alt.X("forecast_date:T", title="Date"),
+            x=alt.X("actual_units:Q", title="Actual units"),
             y=alt.Y("forecast_units:Q", title="Forecast units"),
-            color="machine:N",
+            color=alt.Color("horizon_days:Q", title="Horizon"),
             tooltip=[
                 "forecast_date:T",
-                "machine:N",
-                alt.Tooltip("forecast_units:Q", format=",.1f"),
-                alt.Tooltip("product_rank:Q"),
-                "model_name:N",
+                "projection_date:T",
+                "horizon_days",
+                alt.Tooltip("actual_units:Q", format=",.2f"),
+                alt.Tooltip("forecast_units:Q", format=",.2f"),
+                alt.Tooltip("error:Q", format="+,.2f"),
             ],
         )
-        .properties(
-            title="Forecast by machine",
-            width=750,
-            height=300,
-        )
     )
-    mo.ui.altair_chart(_chart)
+
+    mo.ui.altair_chart((parity_line + scatter_chart).properties(width=560, height=460))
     return
 
 
